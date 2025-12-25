@@ -54,6 +54,28 @@ const aprValidator = v.object({
   interestChargeAmount: v.optional(v.number()),
 });
 
+const recurringStreamValidator = v.object({
+  streamId: v.string(),
+  accountId: v.string(),
+  description: v.string(),
+  merchantName: v.optional(v.string()),
+  averageAmount: v.number(),
+  lastAmount: v.number(),
+  isoCurrencyCode: v.string(),
+  frequency: v.string(),
+  status: v.union(
+    v.literal("MATURE"),
+    v.literal("EARLY_DETECTION"),
+    v.literal("TOMBSTONED")
+  ),
+  isActive: v.boolean(),
+  type: v.union(v.literal("inflow"), v.literal("outflow")),
+  category: v.optional(v.string()),
+  firstDate: v.optional(v.string()),
+  lastDate: v.optional(v.string()),
+  predictedNextDate: v.optional(v.string()),
+});
+
 // =============================================================================
 // INTERNAL QUERIES
 // =============================================================================
@@ -473,5 +495,229 @@ export const scheduleSync = internalMutation({
     );
     // Phase 2: Implement actual scheduling
     return null;
+  },
+});
+
+// =============================================================================
+// INTERNAL MUTATIONS - Item Deactivation
+// =============================================================================
+
+/**
+ * Deactivate a plaidItem (for USER_PERMISSION_REVOKED webhook).
+ * Marks item as inactive but keeps data for audit trail.
+ */
+export const deactivateItem = internalMutation({
+  args: {
+    itemId: v.string(), // Plaid item_id
+    reason: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_item_id", (q) => q.eq("itemId", args.itemId))
+      .first();
+
+    if (item) {
+      await ctx.db.patch(item._id, {
+        status: "error",
+        syncError: `Deactivated: ${args.reason}`,
+      });
+    }
+
+    return null;
+  },
+});
+
+// =============================================================================
+// INTERNAL QUERIES - For Cron Jobs
+// =============================================================================
+
+/**
+ * Get all active plaidItems for scheduled sync.
+ * Returns items that are in 'active' status.
+ */
+export const getAllActiveItems = internalQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      _id: v.string(),
+      userId: v.string(),
+      itemId: v.string(),
+      accessToken: v.string(),
+      cursor: v.optional(v.string()),
+      lastSyncedAt: v.optional(v.number()),
+    })
+  ),
+  handler: async (ctx) => {
+    const items = await ctx.db
+      .query("plaidItems")
+      .collect();
+
+    // Filter for active items
+    const activeItems = items.filter((item) => item.status === "active");
+
+    return activeItems.map((item) => ({
+      _id: String(item._id),
+      userId: item.userId,
+      itemId: item.itemId,
+      accessToken: item.accessToken,
+      cursor: item.cursor,
+      lastSyncedAt: item.lastSyncedAt,
+    }));
+  },
+});
+
+/**
+ * Get items that need sync (haven't synced in specified hours).
+ */
+export const getItemsNeedingSync = internalQuery({
+  args: {
+    maxAgeHours: v.optional(v.number()), // Default 24 hours
+  },
+  returns: v.array(
+    v.object({
+      _id: v.string(),
+      userId: v.string(),
+      itemId: v.string(),
+      accessToken: v.string(),
+      cursor: v.optional(v.string()),
+      lastSyncedAt: v.optional(v.number()),
+    })
+  ),
+  handler: async (ctx, args) => {
+    const maxAgeMs = (args.maxAgeHours ?? 24) * 60 * 60 * 1000;
+    const cutoff = Date.now() - maxAgeMs;
+
+    const items = await ctx.db
+      .query("plaidItems")
+      .collect();
+
+    // Filter for active items that need sync
+    const needingSync = items.filter((item) => {
+      if (item.status !== "active") return false;
+      if (!item.lastSyncedAt) return true; // Never synced
+      return item.lastSyncedAt < cutoff;
+    });
+
+    return needingSync.map((item) => ({
+      _id: String(item._id),
+      userId: item.userId,
+      itemId: item.itemId,
+      accessToken: item.accessToken,
+      cursor: item.cursor,
+      lastSyncedAt: item.lastSyncedAt,
+    }));
+  },
+});
+
+// =============================================================================
+// INTERNAL MUTATIONS - Recurring Streams
+// =============================================================================
+
+/**
+ * Bulk upsert recurring streams.
+ * Creates or updates by streamId.
+ */
+export const bulkUpsertRecurringStreams = internalMutation({
+  args: {
+    userId: v.string(),
+    plaidItemId: v.string(),
+    streams: v.array(recurringStreamValidator),
+  },
+  returns: v.object({
+    created: v.number(),
+    updated: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let created = 0;
+    let updated = 0;
+
+    for (const stream of args.streams) {
+      const existing = await ctx.db
+        .query("plaidRecurringStreams")
+        .withIndex("by_stream_id", (q) => q.eq("streamId", stream.streamId))
+        .first();
+
+      if (existing) {
+        await ctx.db.patch(existing._id, {
+          description: stream.description,
+          merchantName: stream.merchantName,
+          averageAmount: stream.averageAmount,
+          lastAmount: stream.lastAmount,
+          isoCurrencyCode: stream.isoCurrencyCode,
+          frequency: stream.frequency,
+          status: stream.status,
+          isActive: stream.isActive,
+          type: stream.type,
+          category: stream.category,
+          firstDate: stream.firstDate,
+          lastDate: stream.lastDate,
+          predictedNextDate: stream.predictedNextDate,
+          updatedAt: now,
+        });
+        updated++;
+      } else {
+        await ctx.db.insert("plaidRecurringStreams", {
+          userId: args.userId,
+          plaidItemId: args.plaidItemId,
+          streamId: stream.streamId,
+          accountId: stream.accountId,
+          description: stream.description,
+          merchantName: stream.merchantName,
+          averageAmount: stream.averageAmount,
+          lastAmount: stream.lastAmount,
+          isoCurrencyCode: stream.isoCurrencyCode,
+          frequency: stream.frequency,
+          status: stream.status,
+          isActive: stream.isActive,
+          type: stream.type,
+          category: stream.category,
+          firstDate: stream.firstDate,
+          lastDate: stream.lastDate,
+          predictedNextDate: stream.predictedNextDate,
+          createdAt: now,
+          updatedAt: now,
+        });
+        created++;
+      }
+    }
+
+    return { created, updated };
+  },
+});
+
+/**
+ * Mark streams as tombstoned for a plaidItem.
+ * Used when streams are removed during sync.
+ */
+export const tombstoneStreams = internalMutation({
+  args: {
+    plaidItemId: v.string(),
+    streamIds: v.array(v.string()),
+  },
+  returns: v.object({ tombstoned: v.number() }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let tombstoned = 0;
+
+    for (const streamId of args.streamIds) {
+      const existing = await ctx.db
+        .query("plaidRecurringStreams")
+        .withIndex("by_stream_id", (q) => q.eq("streamId", streamId))
+        .first();
+
+      if (existing) {
+        await ctx.db.patch(existing._id, {
+          status: "TOMBSTONED",
+          isActive: false,
+          updatedAt: now,
+        });
+        tombstoned++;
+      }
+    }
+
+    return { tombstoned };
   },
 });

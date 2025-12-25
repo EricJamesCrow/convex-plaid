@@ -386,7 +386,7 @@ export const getLiabilitiesByUser = query({
 
 /**
  * Delete a plaidItem and all associated data.
- * Cascades to accounts, transactions, and liabilities.
+ * Cascades to accounts, transactions, liabilities, and recurring streams.
  */
 export const deletePlaidItem = mutation({
   args: { plaidItemId: v.string() },
@@ -396,6 +396,7 @@ export const deletePlaidItem = mutation({
       accounts: v.number(),
       transactions: v.number(),
       liabilities: v.number(),
+      recurringStreams: v.number(),
     }),
   }),
   handler: async (ctx, args) => {
@@ -405,7 +406,7 @@ export const deletePlaidItem = mutation({
 
     if (!item) {
       return {
-        deleted: { items: 0, accounts: 0, transactions: 0, liabilities: 0 },
+        deleted: { items: 0, accounts: 0, transactions: 0, liabilities: 0, recurringStreams: 0 },
       };
     }
 
@@ -442,13 +443,210 @@ export const deletePlaidItem = mutation({
       await ctx.db.delete(l._id);
     }
 
+    // Delete associated recurring streams
+    const recurringStreams = await ctx.db
+      .query("plaidRecurringStreams")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .collect();
+
+    for (const stream of recurringStreams) {
+      await ctx.db.delete(stream._id);
+    }
+
     return {
       deleted: {
         items: 1,
         accounts: accounts.length,
         transactions: transactions.length,
         liabilities: liabilities.length,
+        recurringStreams: recurringStreams.length,
       },
+    };
+  },
+});
+
+// =============================================================================
+// RECURRING STREAMS QUERIES
+// =============================================================================
+
+const recurringStreamReturnValidator = v.object({
+  _id: v.string(),
+  userId: v.string(),
+  plaidItemId: v.string(),
+  streamId: v.string(),
+  accountId: v.string(),
+  description: v.string(),
+  merchantName: v.optional(v.string()),
+  averageAmount: v.number(),
+  lastAmount: v.number(),
+  isoCurrencyCode: v.string(),
+  frequency: v.string(),
+  status: v.string(),
+  isActive: v.boolean(),
+  type: v.string(),
+  category: v.optional(v.string()),
+  firstDate: v.optional(v.string()),
+  lastDate: v.optional(v.string()),
+  predictedNextDate: v.optional(v.string()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+});
+
+/**
+ * Get all recurring streams for a user.
+ */
+export const getRecurringStreamsByUser = query({
+  args: { userId: v.string() },
+  returns: v.array(recurringStreamReturnValidator),
+  handler: async (ctx, args) => {
+    const streams = await ctx.db
+      .query("plaidRecurringStreams")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    return streams.map((stream) => ({
+      ...stream,
+      _id: String(stream._id),
+    }));
+  },
+});
+
+/**
+ * Get recurring streams for a specific plaidItem.
+ */
+export const getRecurringStreamsByItem = query({
+  args: { plaidItemId: v.string() },
+  returns: v.array(recurringStreamReturnValidator),
+  handler: async (ctx, args) => {
+    const streams = await ctx.db
+      .query("plaidRecurringStreams")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .collect();
+
+    return streams.map((stream) => ({
+      ...stream,
+      _id: String(stream._id),
+    }));
+  },
+});
+
+/**
+ * Get active subscriptions (MATURE + outflow + isActive).
+ * These are established recurring expenses like Netflix, Spotify, etc.
+ */
+export const getActiveSubscriptions = query({
+  args: { userId: v.string() },
+  returns: v.array(recurringStreamReturnValidator),
+  handler: async (ctx, args) => {
+    const streams = await ctx.db
+      .query("plaidRecurringStreams")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    // Filter for active subscriptions
+    const subscriptions = streams.filter(
+      (s) => s.status === "MATURE" && s.type === "outflow" && s.isActive
+    );
+
+    return subscriptions.map((stream) => ({
+      ...stream,
+      _id: String(stream._id),
+    }));
+  },
+});
+
+/**
+ * Get recurring income streams (MATURE + inflow + isActive).
+ * These are established recurring income like paychecks, deposits, etc.
+ */
+export const getRecurringIncome = query({
+  args: { userId: v.string() },
+  returns: v.array(recurringStreamReturnValidator),
+  handler: async (ctx, args) => {
+    const streams = await ctx.db
+      .query("plaidRecurringStreams")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    // Filter for active income streams
+    const income = streams.filter(
+      (s) => s.status === "MATURE" && s.type === "inflow" && s.isActive
+    );
+
+    return income.map((stream) => ({
+      ...stream,
+      _id: String(stream._id),
+    }));
+  },
+});
+
+/**
+ * Get subscriptions summary for a user.
+ * Returns count and estimated monthly total.
+ */
+export const getSubscriptionsSummary = query({
+  args: { userId: v.string() },
+  returns: v.object({
+    count: v.number(),
+    monthlyTotal: v.number(), // MILLIUNITS
+    weeklyCount: v.number(),
+    biweeklyCount: v.number(),
+    monthlyCount: v.number(),
+    annualCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const streams = await ctx.db
+      .query("plaidRecurringStreams")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    // Filter for active subscriptions
+    const subscriptions = streams.filter(
+      (s) => s.status === "MATURE" && s.type === "outflow" && s.isActive
+    );
+
+    let monthlyTotal = 0;
+    let weeklyCount = 0;
+    let biweeklyCount = 0;
+    let monthlyCount = 0;
+    let annualCount = 0;
+
+    for (const sub of subscriptions) {
+      // Normalize to monthly equivalent
+      switch (sub.frequency) {
+        case "WEEKLY":
+          monthlyTotal += sub.averageAmount * 4.33; // ~4.33 weeks per month
+          weeklyCount++;
+          break;
+        case "BIWEEKLY":
+          monthlyTotal += sub.averageAmount * 2.17; // ~2.17 bi-weeks per month
+          biweeklyCount++;
+          break;
+        case "SEMI_MONTHLY":
+          monthlyTotal += sub.averageAmount * 2;
+          biweeklyCount++; // Close enough
+          break;
+        case "MONTHLY":
+          monthlyTotal += sub.averageAmount;
+          monthlyCount++;
+          break;
+        case "ANNUALLY":
+          monthlyTotal += sub.averageAmount / 12;
+          annualCount++;
+          break;
+        default:
+          monthlyTotal += sub.averageAmount; // Assume monthly
+          monthlyCount++;
+      }
+    }
+
+    return {
+      count: subscriptions.length,
+      monthlyTotal: Math.round(monthlyTotal),
+      weeklyCount,
+      biweeklyCount,
+      monthlyCount,
+      annualCount,
     };
   },
 });

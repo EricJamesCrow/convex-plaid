@@ -94,6 +94,39 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { added: number; cursor: string; modified: number; removed: number },
         Name
       >;
+      fetchRecurringStreams: FunctionReference<
+        "action",
+        "public",
+        {
+          encryptionKey: string;
+          plaidClientId: string;
+          plaidEnv: string;
+          plaidItemId: string;
+          plaidSecret: string;
+        },
+        { inflows: number; outflows: number },
+        Name
+      >;
+      createUpdateLinkToken: FunctionReference<
+        "action",
+        "public",
+        {
+          encryptionKey: string;
+          plaidClientId: string;
+          plaidEnv: string;
+          plaidItemId: string;
+          plaidSecret: string;
+        },
+        { linkToken: string },
+        Name
+      >;
+      completeReauth: FunctionReference<
+        "action",
+        "public",
+        { plaidItemId: string },
+        { success: boolean },
+        Name
+      >;
     };
     private: {
       getPlaidItem: FunctionReference<
@@ -258,6 +291,75 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { itemId: string; syncType: string },
         null,
+        Name
+      >;
+      deactivateItem: FunctionReference<
+        "mutation",
+        "internal",
+        { itemId: string; reason: string },
+        null,
+        Name
+      >;
+      getAllActiveItems: FunctionReference<
+        "query",
+        "internal",
+        Record<string, never>,
+        Array<{
+          _id: string;
+          userId: string;
+          itemId: string;
+          accessToken: string;
+          cursor?: string;
+          lastSyncedAt?: number;
+        }>,
+        Name
+      >;
+      getItemsNeedingSync: FunctionReference<
+        "query",
+        "internal",
+        { maxAgeHours?: number },
+        Array<{
+          _id: string;
+          userId: string;
+          itemId: string;
+          accessToken: string;
+          cursor?: string;
+          lastSyncedAt?: number;
+        }>,
+        Name
+      >;
+      bulkUpsertRecurringStreams: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          userId: string;
+          plaidItemId: string;
+          streams: Array<{
+            streamId: string;
+            accountId: string;
+            description: string;
+            merchantName?: string;
+            averageAmount: number;
+            lastAmount: number;
+            isoCurrencyCode: string;
+            frequency: string;
+            status: "MATURE" | "EARLY_DETECTION" | "TOMBSTONED";
+            isActive: boolean;
+            type: "inflow" | "outflow";
+            category?: string;
+            firstDate?: string;
+            lastDate?: string;
+            predictedNextDate?: string;
+          }>;
+        },
+        { created: number; updated: number },
+        Name
+      >;
+      tombstoneStreams: FunctionReference<
+        "mutation",
+        "internal",
+        { plaidItemId: string; streamIds: string[] },
+        { tombstoned: number },
         Name
       >;
     };
@@ -454,7 +556,134 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             items: number;
             liabilities: number;
             transactions: number;
+            recurringStreams: number;
           };
+        },
+        Name
+      >;
+      getRecurringStreamsByUser: FunctionReference<
+        "query",
+        "public",
+        { userId: string },
+        Array<{
+          _id: string;
+          userId: string;
+          plaidItemId: string;
+          streamId: string;
+          accountId: string;
+          description: string;
+          merchantName?: string;
+          averageAmount: number;
+          lastAmount: number;
+          isoCurrencyCode: string;
+          frequency: string;
+          status: string;
+          isActive: boolean;
+          type: string;
+          category?: string;
+          firstDate?: string;
+          lastDate?: string;
+          predictedNextDate?: string;
+          createdAt: number;
+          updatedAt: number;
+        }>,
+        Name
+      >;
+      getRecurringStreamsByItem: FunctionReference<
+        "query",
+        "public",
+        { plaidItemId: string },
+        Array<{
+          _id: string;
+          userId: string;
+          plaidItemId: string;
+          streamId: string;
+          accountId: string;
+          description: string;
+          merchantName?: string;
+          averageAmount: number;
+          lastAmount: number;
+          isoCurrencyCode: string;
+          frequency: string;
+          status: string;
+          isActive: boolean;
+          type: string;
+          category?: string;
+          firstDate?: string;
+          lastDate?: string;
+          predictedNextDate?: string;
+          createdAt: number;
+          updatedAt: number;
+        }>,
+        Name
+      >;
+      getActiveSubscriptions: FunctionReference<
+        "query",
+        "public",
+        { userId: string },
+        Array<{
+          _id: string;
+          userId: string;
+          plaidItemId: string;
+          streamId: string;
+          accountId: string;
+          description: string;
+          merchantName?: string;
+          averageAmount: number;
+          lastAmount: number;
+          isoCurrencyCode: string;
+          frequency: string;
+          status: string;
+          isActive: boolean;
+          type: string;
+          category?: string;
+          firstDate?: string;
+          lastDate?: string;
+          predictedNextDate?: string;
+          createdAt: number;
+          updatedAt: number;
+        }>,
+        Name
+      >;
+      getRecurringIncome: FunctionReference<
+        "query",
+        "public",
+        { userId: string },
+        Array<{
+          _id: string;
+          userId: string;
+          plaidItemId: string;
+          streamId: string;
+          accountId: string;
+          description: string;
+          merchantName?: string;
+          averageAmount: number;
+          lastAmount: number;
+          isoCurrencyCode: string;
+          frequency: string;
+          status: string;
+          isActive: boolean;
+          type: string;
+          category?: string;
+          firstDate?: string;
+          lastDate?: string;
+          predictedNextDate?: string;
+          createdAt: number;
+          updatedAt: number;
+        }>,
+        Name
+      >;
+      getSubscriptionsSummary: FunctionReference<
+        "query",
+        "public",
+        { userId: string },
+        {
+          count: number;
+          monthlyTotal: number;
+          weeklyCount: number;
+          biweeklyCount: number;
+          monthlyCount: number;
+          annualCount: number;
         },
         Name
       >;

@@ -487,3 +487,217 @@ export const fetchLiabilities = action({
     };
   },
 });
+
+// =============================================================================
+// FETCH RECURRING STREAMS
+// =============================================================================
+
+/**
+ * Fetch and store recurring transaction streams from Plaid.
+ *
+ * Plaid's recurring detection API identifies:
+ * - Subscriptions (Netflix, Spotify, etc.)
+ * - Regular bills (rent, utilities, etc.)
+ * - Recurring income (paychecks, deposits)
+ *
+ * Flow:
+ * 1. Get plaidItem and decrypt access token
+ * 2. Fetch recurring streams from Plaid API
+ * 3. Transform to component format (with milliunits)
+ * 4. Bulk upsert recurring streams
+ */
+export const fetchRecurringStreams = action({
+  args: {
+    plaidItemId: v.string(),
+    ...plaidConfigArgs,
+  },
+  returns: v.object({
+    inflows: v.number(),
+    outflows: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    // Get plaidItem
+    const item = await ctx.runQuery(internal.private.getPlaidItem, {
+      plaidItemId: args.plaidItemId,
+    });
+
+    if (!item) {
+      throw new Error(`Plaid item not found: ${args.plaidItemId}`);
+    }
+
+    // Decrypt access token
+    const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
+
+    console.log("[Plaid Component] Fetching recurring streams...");
+
+    const plaidClient = initPlaidClient(
+      args.plaidClientId,
+      args.plaidSecret,
+      args.plaidEnv
+    );
+
+    const recurringResponse = await plaidClient.transactionsRecurringGet({
+      access_token: accessToken,
+    });
+
+    const inflowStreams = recurringResponse.data.inflow_streams ?? [];
+    const outflowStreams = recurringResponse.data.outflow_streams ?? [];
+
+    console.log(
+      `[Plaid Component] Fetched ${inflowStreams.length} inflows, ${outflowStreams.length} outflows`
+    );
+
+    // Transform and store inflow streams (income)
+    const inflowData = inflowStreams.map((stream) => ({
+      streamId: stream.stream_id,
+      accountId: stream.account_id,
+      description: stream.description,
+      merchantName: stream.merchant_name ?? undefined,
+      averageAmount: convertAmountToMilliunits(stream.average_amount?.amount ?? 0),
+      lastAmount: convertAmountToMilliunits(stream.last_amount?.amount ?? 0),
+      isoCurrencyCode: stream.average_amount?.iso_currency_code ?? "USD",
+      frequency: stream.frequency,
+      status: stream.status as "MATURE" | "EARLY_DETECTION" | "TOMBSTONED",
+      isActive: stream.is_active,
+      type: "inflow" as const,
+      category: stream.personal_finance_category?.primary ?? undefined,
+      firstDate: stream.first_date ?? undefined,
+      lastDate: stream.last_date ?? undefined,
+      predictedNextDate: (stream as any).predicted_next_date ?? undefined,
+    }));
+
+    // Transform and store outflow streams (expenses)
+    const outflowData = outflowStreams.map((stream) => ({
+      streamId: stream.stream_id,
+      accountId: stream.account_id,
+      description: stream.description,
+      merchantName: stream.merchant_name ?? undefined,
+      averageAmount: convertAmountToMilliunits(stream.average_amount?.amount ?? 0),
+      lastAmount: convertAmountToMilliunits(stream.last_amount?.amount ?? 0),
+      isoCurrencyCode: stream.average_amount?.iso_currency_code ?? "USD",
+      frequency: stream.frequency,
+      status: stream.status as "MATURE" | "EARLY_DETECTION" | "TOMBSTONED",
+      isActive: stream.is_active,
+      type: "outflow" as const,
+      category: stream.personal_finance_category?.primary ?? undefined,
+      firstDate: stream.first_date ?? undefined,
+      lastDate: stream.last_date ?? undefined,
+      predictedNextDate: (stream as any).predicted_next_date ?? undefined,
+    }));
+
+    // Bulk upsert all streams
+    const allStreams = [...inflowData, ...outflowData];
+    if (allStreams.length > 0) {
+      await ctx.runMutation(internal.private.bulkUpsertRecurringStreams, {
+        userId: item.userId,
+        plaidItemId: args.plaidItemId,
+        streams: allStreams,
+      });
+
+      console.log(`[Plaid Component] Stored ${allStreams.length} recurring streams`);
+    }
+
+    return {
+      inflows: inflowStreams.length,
+      outflows: outflowStreams.length,
+    };
+  },
+});
+
+// =============================================================================
+// CREATE UPDATE LINK TOKEN (Re-auth)
+// =============================================================================
+
+/**
+ * Create an update link token for re-authentication.
+ *
+ * Used when a plaidItem is in 'needs_reauth' status.
+ * Opens Plaid Link in update mode instead of creating a new connection.
+ *
+ * Flow:
+ * 1. Get plaidItem and decrypt access token
+ * 2. Create link token with access_token (update mode)
+ * 3. Return link token for frontend
+ */
+export const createUpdateLinkToken = action({
+  args: {
+    plaidItemId: v.string(),
+    ...plaidConfigArgs,
+  },
+  returns: v.object({
+    linkToken: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    // Get plaidItem
+    const item = await ctx.runQuery(internal.private.getPlaidItem, {
+      plaidItemId: args.plaidItemId,
+    });
+
+    if (!item) {
+      throw new Error(`Plaid item not found: ${args.plaidItemId}`);
+    }
+
+    // Decrypt access token
+    const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
+
+    console.log("[Plaid Component] Creating update link token for re-auth...");
+
+    const plaidClient = initPlaidClient(
+      args.plaidClientId,
+      args.plaidSecret,
+      args.plaidEnv
+    );
+
+    // Create link token in update mode (with access_token)
+    const response = await plaidClient.linkTokenCreate({
+      user: {
+        client_user_id: item.userId,
+      },
+      client_name: "App",
+      access_token: accessToken, // This triggers update mode
+      country_codes: ["US"] as any[],
+      language: "en",
+    });
+
+    console.log("[Plaid Component] Update link token created successfully");
+
+    return {
+      linkToken: response.data.link_token,
+    };
+  },
+});
+
+// =============================================================================
+// COMPLETE RE-AUTH
+// =============================================================================
+
+/**
+ * Complete re-authentication after user has gone through update Link flow.
+ *
+ * Unlike initial connection, update flow doesn't return a new public token.
+ * We just need to mark the item as active again.
+ */
+export const completeReauth = action({
+  args: {
+    plaidItemId: v.string(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    console.log("[Plaid Component] Completing re-auth...");
+
+    // Mark item as active again
+    await ctx.runMutation(internal.private.updateItemStatus, {
+      plaidItemId: args.plaidItemId,
+      status: "active",
+      syncError: undefined,
+    });
+
+    console.log("[Plaid Component] Re-auth complete, item marked as active");
+
+    return {
+      success: true,
+    };
+  },
+});

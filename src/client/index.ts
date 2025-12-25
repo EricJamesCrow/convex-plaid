@@ -20,7 +20,19 @@ import type {
   SyncTransactionsResult,
   FetchLiabilitiesResult,
   OnboardItemResult,
+  FetchRecurringStreamsResult,
+  CreateUpdateLinkTokenResult,
+  CompleteReauthResult,
 } from "./types.js";
+import {
+  verifyPlaidWebhook,
+  parseWebhookPayload,
+  isTransactionSyncWebhook,
+  isItemErrorWebhook,
+  isPendingExpirationWebhook,
+  isUserPermissionRevokedWebhook,
+  isLiabilitiesUpdateWebhook,
+} from "../component/webhooks.js";
 import type { ComponentApi } from "../component/_generated/component.js";
 
 // =============================================================================
@@ -38,6 +50,9 @@ export type {
   SyncTransactionsResult,
   FetchLiabilitiesResult,
   OnboardItemResult,
+  FetchRecurringStreamsResult,
+  CreateUpdateLinkTokenResult,
+  CompleteReauthResult,
   ActionCtx,
 };
 
@@ -212,6 +227,74 @@ export class Plaid {
     });
   }
 
+  /**
+   * Fetch and store recurring transaction streams.
+   *
+   * Identifies subscriptions, regular bills, and recurring income.
+   *
+   * @param plaidItemId - Convex document ID of the plaidItem (as string)
+   */
+  async fetchRecurringStreams(
+    ctx: ActionCtx,
+    args: {
+      plaidItemId: string;
+    }
+  ): Promise<FetchRecurringStreamsResult> {
+    return await ctx.runAction(this.component.actions.fetchRecurringStreams, {
+      plaidItemId: args.plaidItemId,
+      plaidClientId: this.config.PLAID_CLIENT_ID,
+      plaidSecret: this.config.PLAID_SECRET,
+      plaidEnv: this.config.PLAID_ENV,
+      encryptionKey: this.config.ENCRYPTION_KEY,
+    });
+  }
+
+  // ===========================================================================
+  // RE-AUTH FLOW
+  // ===========================================================================
+
+  /**
+   * Create an update link token for re-authentication.
+   *
+   * Use this when a plaidItem is in 'needs_reauth' status.
+   * Opens Plaid Link in update mode instead of creating a new connection.
+   *
+   * @param plaidItemId - Convex document ID of the plaidItem (as string)
+   */
+  async createUpdateLinkToken(
+    ctx: ActionCtx,
+    args: {
+      plaidItemId: string;
+    }
+  ): Promise<CreateUpdateLinkTokenResult> {
+    return await ctx.runAction(this.component.actions.createUpdateLinkToken, {
+      plaidItemId: args.plaidItemId,
+      plaidClientId: this.config.PLAID_CLIENT_ID,
+      plaidSecret: this.config.PLAID_SECRET,
+      plaidEnv: this.config.PLAID_ENV,
+      encryptionKey: this.config.ENCRYPTION_KEY,
+    });
+  }
+
+  /**
+   * Complete re-authentication after user has gone through update Link flow.
+   *
+   * Unlike initial connection, update flow doesn't return a new public token.
+   * This marks the item as active again.
+   *
+   * @param plaidItemId - Convex document ID of the plaidItem (as string)
+   */
+  async completeReauth(
+    ctx: ActionCtx,
+    args: {
+      plaidItemId: string;
+    }
+  ): Promise<CompleteReauthResult> {
+    return await ctx.runAction(this.component.actions.completeReauth, {
+      plaidItemId: args.plaidItemId,
+    });
+  }
+
   // ===========================================================================
   // CONVENIENCE METHODS
   // ===========================================================================
@@ -223,6 +306,7 @@ export class Plaid {
    * 1. Fetch accounts
    * 2. Sync transactions
    * 3. Fetch liabilities
+   * 4. Fetch recurring streams
    *
    * Call this after exchangePublicToken completes.
    *
@@ -238,6 +322,14 @@ export class Plaid {
     const accounts = await this.fetchAccounts(ctx, args);
     const transactions = await this.syncTransactions(ctx, args);
     const liabilities = await this.fetchLiabilities(ctx, args);
+
+    // Also fetch recurring streams (Phase 2)
+    try {
+      await this.fetchRecurringStreams(ctx, args);
+    } catch (e) {
+      // Recurring streams may not be available for all accounts
+      console.warn("[Plaid Component] Failed to fetch recurring streams:", e);
+    }
 
     return {
       accounts,
@@ -265,18 +357,21 @@ export class Plaid {
 }
 
 // =============================================================================
-// WEBHOOK REGISTRATION (Phase 1 Stub)
+// WEBHOOK REGISTRATION (Full Implementation)
 // =============================================================================
 
 /**
  * Register Plaid webhook routes with the HTTP router.
  *
- * Phase 1: Basic stub that logs incoming webhooks.
- * Phase 2 will add signature verification and full event processing.
+ * Handles:
+ * - JWT signature verification (when plaidConfig provided)
+ * - Auto-sync triggers for SYNC_UPDATES_AVAILABLE
+ * - Item status updates for errors and re-auth
+ * - Liabilities sync triggers
  *
  * @param http - The HTTP router instance
  * @param component - The Plaid component API
- * @param config - Optional configuration
+ * @param config - Configuration including plaidConfig for verification and sync
  *
  * @example
  * ```typescript
@@ -311,71 +406,160 @@ export function registerRoutes(
     path: webhookPath,
     method: "POST",
     handler: httpActionGeneric(async (ctx, req) => {
-      // Phase 1: Basic logging stub
-      // Phase 2 will add:
-      // - Signature verification (PLAID_WEBHOOK_SECRET)
-      // - Full event processing (SYNC_UPDATES_AVAILABLE, etc.)
-      // - Triggering automatic syncs
+      // Get raw body for signature verification
+      const rawBody = await req.text();
 
-      const body = await req.json();
+      // Step 1: Verify webhook signature (if plaidConfig provided)
+      const signedJwt = req.headers.get("plaid-verification");
+      if (config?.plaidConfig && signedJwt) {
+        const verification = await verifyPlaidWebhook(signedJwt, rawBody, {
+          plaidClientId: config.plaidConfig.PLAID_CLIENT_ID,
+          plaidSecret: config.plaidConfig.PLAID_SECRET,
+          plaidEnv: config.plaidConfig.PLAID_ENV,
+        });
 
-      console.log("[Plaid Webhook] Received:", {
-        webhook_type: body.webhook_type,
-        webhook_code: body.webhook_code,
-        item_id: body.item_id,
-      });
-
-      // Extract webhook info
-      const webhookType = body.webhook_type as string;
-      const webhookCode = body.webhook_code as string;
-      const itemId = body.item_id as string;
-
-      // Handle known webhook types
-      if (webhookType === "TRANSACTIONS") {
-        if (webhookCode === "SYNC_UPDATES_AVAILABLE") {
-          console.log(
-            `[Plaid Webhook] Transaction updates available for item: ${itemId}`
+        if (!verification.isValid) {
+          console.error(
+            `[Plaid Webhook] Signature verification failed: ${verification.error}`
           );
-          // Phase 2: Auto-trigger sync via ctx.runAction
-        } else if (webhookCode === "INITIAL_UPDATE") {
-          console.log(
-            `[Plaid Webhook] Initial transaction sync complete for item: ${itemId}`
-          );
-        } else if (webhookCode === "HISTORICAL_UPDATE") {
-          console.log(
-            `[Plaid Webhook] Historical transaction sync complete for item: ${itemId}`
+          return new Response(
+            JSON.stringify({ error: "Invalid signature" }),
+            { status: 401, headers: { "Content-Type": "application/json" } }
           );
         }
-      } else if (webhookType === "ITEM") {
-        if (webhookCode === "ERROR") {
-          console.log(
-            `[Plaid Webhook] Item error for ${itemId}:`,
-            body.error
-          );
-          // Phase 2: Update item status via ctx.runMutation
-        } else if (webhookCode === "PENDING_EXPIRATION") {
-          console.log(
-            `[Plaid Webhook] Item ${itemId} access token expiring soon`
-          );
-        }
-      } else if (webhookType === "LIABILITIES") {
-        if (webhookCode === "DEFAULT_UPDATE") {
-          console.log(
-            `[Plaid Webhook] Liability updates available for item: ${itemId}`
-          );
-          // Phase 2: Auto-trigger fetchLiabilities
-        }
+
+        console.log("[Plaid Webhook] Signature verified successfully");
       }
 
-      // Call custom handler if provided
-      if (config?.onWebhook) {
-        await config.onWebhook(
-          ctx as any,
-          webhookType as any,
-          webhookCode,
-          itemId,
-          body
+      // Step 2: Parse webhook payload
+      let payload;
+      try {
+        payload = parseWebhookPayload(rawBody);
+      } catch (e) {
+        console.error("[Plaid Webhook] Failed to parse payload:", e);
+        return new Response(
+          JSON.stringify({ error: "Invalid payload" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
         );
+      }
+
+      const { webhook_type, webhook_code, item_id, error: plaidError } = payload;
+
+      console.log("[Plaid Webhook] Received:", {
+        webhook_type,
+        webhook_code,
+        item_id,
+      });
+
+      // Step 3: Look up the plaidItem by Plaid's item_id
+      const plaidItem = await ctx.runQuery(
+        component.private.getPlaidItemByItemId,
+        { itemId: item_id }
+      );
+
+      if (!plaidItem) {
+        console.warn(`[Plaid Webhook] No plaidItem found for item_id: ${item_id}`);
+        // Still return 200 to prevent Plaid from retrying
+        return new Response(
+          JSON.stringify({ received: true, warning: "Item not found" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const plaidItemId = String(plaidItem._id);
+
+      // Step 4: Handle webhook by type
+      if (isTransactionSyncWebhook(webhook_type, webhook_code)) {
+        console.log(
+          `[Plaid Webhook] Transaction updates available for item: ${item_id}`
+        );
+
+        // Auto-trigger sync if plaidConfig provided
+        if (config?.plaidConfig) {
+          try {
+            await ctx.runAction(component.actions.syncTransactions, {
+              plaidItemId,
+              plaidClientId: config.plaidConfig.PLAID_CLIENT_ID,
+              plaidSecret: config.plaidConfig.PLAID_SECRET,
+              plaidEnv: config.plaidConfig.PLAID_ENV,
+              encryptionKey: config.plaidConfig.ENCRYPTION_KEY,
+            });
+            console.log(`[Plaid Webhook] Auto-sync triggered for item: ${item_id}`);
+          } catch (e) {
+            console.error(`[Plaid Webhook] Auto-sync failed for item ${item_id}:`, e);
+          }
+        }
+      } else if (isItemErrorWebhook(webhook_type, webhook_code)) {
+        const errorCode = plaidError?.error_code ?? "UNKNOWN";
+        const errorMessage = plaidError?.error_message ?? "Unknown error";
+
+        console.error(
+          `[Plaid Webhook] Item error for ${item_id}: ${errorCode} - ${errorMessage}`
+        );
+
+        // Update item status to error
+        await ctx.runMutation(component.private.setItemError, {
+          itemId: item_id,
+          errorCode,
+          errorMessage,
+        });
+      } else if (isPendingExpirationWebhook(webhook_type, webhook_code)) {
+        console.log(
+          `[Plaid Webhook] Item ${item_id} access token expiring soon`
+        );
+
+        // Mark item as needing re-auth
+        await ctx.runMutation(component.private.markNeedsReauth, {
+          itemId: item_id,
+          reason: "Access token expiring - user must re-authenticate",
+        });
+      } else if (isUserPermissionRevokedWebhook(webhook_type, webhook_code)) {
+        console.log(`[Plaid Webhook] User revoked permission for item: ${item_id}`);
+
+        // Deactivate the item
+        await ctx.runMutation(component.private.deactivateItem, {
+          itemId: item_id,
+          reason: "User revoked permission",
+        });
+      } else if (isLiabilitiesUpdateWebhook(webhook_type, webhook_code)) {
+        console.log(
+          `[Plaid Webhook] Liability updates available for item: ${item_id}`
+        );
+
+        // Auto-trigger liabilities fetch if plaidConfig provided
+        if (config?.plaidConfig) {
+          try {
+            await ctx.runAction(component.actions.fetchLiabilities, {
+              plaidItemId,
+              plaidClientId: config.plaidConfig.PLAID_CLIENT_ID,
+              plaidSecret: config.plaidConfig.PLAID_SECRET,
+              plaidEnv: config.plaidConfig.PLAID_ENV,
+              encryptionKey: config.plaidConfig.ENCRYPTION_KEY,
+            });
+            console.log(`[Plaid Webhook] Auto-liabilities fetch for item: ${item_id}`);
+          } catch (e) {
+            console.error(`[Plaid Webhook] Auto-liabilities failed for ${item_id}:`, e);
+          }
+        }
+      } else {
+        console.log(
+          `[Plaid Webhook] Unhandled webhook: ${webhook_type}.${webhook_code}`
+        );
+      }
+
+      // Step 5: Call custom handler if provided
+      if (config?.onWebhook) {
+        try {
+          await config.onWebhook(
+            ctx as any,
+            webhook_type as any,
+            webhook_code,
+            item_id,
+            payload
+          );
+        } catch (e) {
+          console.error("[Plaid Webhook] Custom handler error:", e);
+        }
       }
 
       return new Response(JSON.stringify({ received: true }), {

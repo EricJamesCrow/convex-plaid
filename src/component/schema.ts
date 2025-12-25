@@ -150,4 +150,53 @@ export default defineSchema({
     .index("by_account", ["accountId"])
     .index("by_plaid_item", ["plaidItemId"])
     .index("by_user", ["userId"]),
+
+  /**
+   * Plaid Recurring Streams - Detected recurring transactions
+   *
+   * From Plaid /transactions/recurring/get API.
+   * Identifies subscriptions, regular bills, and recurring income.
+   * All monetary values in MILLIUNITS.
+   */
+  plaidRecurringStreams: defineTable({
+    userId: v.string(),
+    plaidItemId: v.string(), // String ID for component boundary
+    streamId: v.string(), // Plaid stream_id (unique per stream)
+    accountId: v.string(), // Plaid account_id
+
+    // Stream details
+    description: v.string(), // Description/name of the recurring transaction
+    merchantName: v.optional(v.string()), // Cleaned merchant name
+
+    // Amount & frequency
+    averageAmount: v.number(), // MILLIUNITS - average transaction amount
+    lastAmount: v.number(), // MILLIUNITS - most recent transaction amount
+    isoCurrencyCode: v.string(),
+    frequency: v.string(), // WEEKLY, BIWEEKLY, SEMI_MONTHLY, MONTHLY, ANNUALLY
+
+    // Status
+    status: v.union(
+      v.literal("MATURE"), // Established recurring pattern
+      v.literal("EARLY_DETECTION"), // Newly detected, not yet established
+      v.literal("TOMBSTONED") // No longer active
+    ),
+    isActive: v.boolean(), // Quick filter for active streams
+
+    // Type
+    type: v.union(v.literal("inflow"), v.literal("outflow")), // Income vs expense
+    category: v.optional(v.string()), // Category from Plaid
+
+    // Dates
+    firstDate: v.optional(v.string()), // ISO date of first occurrence
+    lastDate: v.optional(v.string()), // ISO date of most recent occurrence
+    predictedNextDate: v.optional(v.string()), // ISO date of predicted next occurrence
+
+    // Metadata
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_stream_id", ["streamId"])
+    .index("by_plaid_item", ["plaidItemId"])
+    .index("by_status", ["userId", "status", "isActive"]),
 });

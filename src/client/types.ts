@@ -168,6 +168,28 @@ export interface OnboardItemResult {
   liabilities: FetchLiabilitiesResult;
 }
 
+/**
+ * Result from fetchRecurringStreams.
+ */
+export interface FetchRecurringStreamsResult {
+  inflows: number;
+  outflows: number;
+}
+
+/**
+ * Result from createUpdateLinkToken.
+ */
+export interface CreateUpdateLinkTokenResult {
+  linkToken: string;
+}
+
+/**
+ * Result from completeReauth.
+ */
+export interface CompleteReauthResult {
+  success: boolean;
+}
+
 // =============================================================================
 // RE-EXPORTS
 // =============================================================================
