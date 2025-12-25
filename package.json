@@ -1,0 +1,67 @@
+{
+  "name": "@smartpockets/convex-plaid",
+  "description": "A Plaid component for Convex - bank accounts, transactions, and liabilities.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "keywords": [
+    "convex",
+    "component",
+    "plaid",
+    "banking",
+    "fintech"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "run-p -r 'dev:*'",
+    "dev:backend": "convex dev --typecheck-components",
+    "dev:build": "chokidar 'tsconfig*.json' 'src/**/*.ts' -i '**/*.test.ts' -c 'npx convex codegen --component-dir ./src/component && npm run build' --initial",
+    "predev": "path-exists .env.local || (npm run build && convex dev --skip-push)",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "build": "tsc --project ./tsconfig.build.json",
+    "typecheck": "tsc --noEmit && tsc -p example && tsc -p example/convex",
+    "lint": "eslint .",
+    "test": "vitest run --typecheck",
+    "test:watch": "vitest --typecheck --clearScreen false",
+    "prepublishOnly": "npm run clean && npm run build",
+    "preversion": "npm run clean && npm ci && npm run build && run-p test lint typecheck",
+    "release": "npm version patch && npm publish && git push --follow-tags"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./test": "./src/test.ts",
+    "./_generated/component.js": {
+      "types": "./dist/component/_generated/component.d.ts"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    }
+  },
+  "peerDependencies": {
+    "convex": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "chokidar-cli": "^3.0.0",
+    "convex": "^1.29.0",
+    "convex-test": "^0.0.40",
+    "npm-run-all2": "^8.0.0",
+    "path-exists-cli": "^2.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "jose": "^5.0.0",
+    "plaid": "^28.0.0"
+  },
+  "types": "./dist/client/index.d.ts",
+  "module": "./dist/client/index.js"
+}
