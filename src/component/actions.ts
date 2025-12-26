@@ -413,6 +413,8 @@ export const fetchLiabilities = action({
   },
   returns: v.object({
     creditCards: v.number(),
+    mortgages: v.number(),
+    studentLoans: v.number(),
   }),
   handler: async (ctx, args) => {
     // Get plaidItem
@@ -440,8 +442,12 @@ export const fetchLiabilities = action({
     });
 
     const creditCards = liabilitiesResponse.data.liabilities?.credit ?? [];
+    const mortgages = liabilitiesResponse.data.liabilities?.mortgage ?? [];
+    const studentLoans = liabilitiesResponse.data.liabilities?.student ?? [];
 
-    console.log(`[Plaid Component] Fetched ${creditCards.length} credit cards`);
+    console.log(
+      `[Plaid Component] Fetched ${creditCards.length} credit cards, ${mortgages.length} mortgages, ${studentLoans.length} student loans`
+    );
 
     // Upsert credit card liabilities
     for (const card of creditCards) {
@@ -480,10 +486,146 @@ export const fetchLiabilities = action({
       });
     }
 
-    console.log(`[Plaid Component] Stored ${creditCards.length} credit card liabilities`);
+    // Upsert mortgage liabilities
+    for (const mortgage of mortgages) {
+      await ctx.runMutation(internal.private.upsertMortgageLiability, {
+        userId: item.userId,
+        plaidItemId: args.plaidItemId,
+        accountId: mortgage.account_id ?? "",
+        accountNumber: mortgage.account_number ?? undefined,
+        loanTerm: mortgage.loan_term ?? undefined,
+        loanTypeDescription: mortgage.loan_type_description ?? undefined,
+        originationDate: mortgage.origination_date ?? undefined,
+        maturityDate: mortgage.maturity_date ?? undefined,
+        interestRatePercentage: mortgage.interest_rate?.percentage ?? 0,
+        interestRateType: mortgage.interest_rate?.type ?? undefined,
+        lastPaymentAmount:
+          mortgage.last_payment_amount != null
+            ? convertAmountToMilliunits(mortgage.last_payment_amount)
+            : undefined,
+        lastPaymentDate: mortgage.last_payment_date ?? undefined,
+        nextMonthlyPayment:
+          mortgage.next_monthly_payment != null
+            ? convertAmountToMilliunits(mortgage.next_monthly_payment)
+            : undefined,
+        nextPaymentDueDate: mortgage.next_payment_due_date ?? undefined,
+        originationPrincipalAmount:
+          mortgage.origination_principal_amount != null
+            ? convertAmountToMilliunits(mortgage.origination_principal_amount)
+            : undefined,
+        currentLateFee:
+          mortgage.current_late_fee != null
+            ? convertAmountToMilliunits(mortgage.current_late_fee)
+            : undefined,
+        escrowBalance:
+          mortgage.escrow_balance != null
+            ? convertAmountToMilliunits(mortgage.escrow_balance)
+            : undefined,
+        pastDueAmount:
+          mortgage.past_due_amount != null
+            ? convertAmountToMilliunits(mortgage.past_due_amount)
+            : undefined,
+        ytdInterestPaid:
+          mortgage.ytd_interest_paid != null
+            ? convertAmountToMilliunits(mortgage.ytd_interest_paid)
+            : undefined,
+        ytdPrincipalPaid:
+          mortgage.ytd_principal_paid != null
+            ? convertAmountToMilliunits(mortgage.ytd_principal_paid)
+            : undefined,
+        hasPmi: mortgage.has_pmi ?? undefined,
+        hasPrepaymentPenalty: mortgage.has_prepayment_penalty ?? undefined,
+        propertyAddress: mortgage.property_address
+          ? {
+              street: mortgage.property_address.street ?? undefined,
+              city: mortgage.property_address.city ?? undefined,
+              region: mortgage.property_address.region ?? undefined,
+              postalCode: mortgage.property_address.postal_code ?? undefined,
+              country: mortgage.property_address.country ?? undefined,
+            }
+          : undefined,
+      });
+    }
+
+    // Upsert student loan liabilities
+    for (const loan of studentLoans) {
+      await ctx.runMutation(internal.private.upsertStudentLoanLiability, {
+        userId: item.userId,
+        plaidItemId: args.plaidItemId,
+        accountId: loan.account_id ?? "",
+        accountNumber: loan.account_number ?? undefined,
+        loanName: loan.loan_name ?? undefined,
+        guarantor: loan.guarantor ?? undefined,
+        sequenceNumber: loan.sequence_number ?? undefined,
+        disbursementDates: loan.disbursement_dates ?? undefined,
+        originationDate: loan.origination_date ?? undefined,
+        expectedPayoffDate: loan.expected_payoff_date ?? undefined,
+        lastStatementIssueDate: loan.last_statement_issue_date ?? undefined,
+        interestRatePercentage: loan.interest_rate_percentage ?? 0,
+        lastPaymentAmount:
+          loan.last_payment_amount != null
+            ? convertAmountToMilliunits(loan.last_payment_amount)
+            : undefined,
+        lastPaymentDate: loan.last_payment_date ?? undefined,
+        minimumPaymentAmount:
+          loan.minimum_payment_amount != null
+            ? convertAmountToMilliunits(loan.minimum_payment_amount)
+            : undefined,
+        nextPaymentDueDate: loan.next_payment_due_date ?? undefined,
+        paymentReferenceNumber: loan.payment_reference_number ?? undefined,
+        originationPrincipalAmount:
+          loan.origination_principal_amount != null
+            ? convertAmountToMilliunits(loan.origination_principal_amount)
+            : undefined,
+        outstandingInterestAmount:
+          loan.outstanding_interest_amount != null
+            ? convertAmountToMilliunits(loan.outstanding_interest_amount)
+            : undefined,
+        lastStatementBalance:
+          (loan as any).last_statement_balance != null
+            ? convertAmountToMilliunits((loan as any).last_statement_balance)
+            : undefined,
+        ytdInterestPaid:
+          loan.ytd_interest_paid != null
+            ? convertAmountToMilliunits(loan.ytd_interest_paid)
+            : undefined,
+        ytdPrincipalPaid:
+          loan.ytd_principal_paid != null
+            ? convertAmountToMilliunits(loan.ytd_principal_paid)
+            : undefined,
+        isOverdue: loan.is_overdue ?? undefined,
+        loanStatus: loan.loan_status
+          ? {
+              type: loan.loan_status.type ?? undefined,
+              endDate: loan.loan_status.end_date ?? undefined,
+            }
+          : undefined,
+        repaymentPlan: loan.repayment_plan
+          ? {
+              type: loan.repayment_plan.type ?? undefined,
+              description: loan.repayment_plan.description ?? undefined,
+            }
+          : undefined,
+        servicerAddress: loan.servicer_address
+          ? {
+              street: loan.servicer_address.street ?? undefined,
+              city: loan.servicer_address.city ?? undefined,
+              region: loan.servicer_address.region ?? undefined,
+              postalCode: loan.servicer_address.postal_code ?? undefined,
+              country: loan.servicer_address.country ?? undefined,
+            }
+          : undefined,
+      });
+    }
+
+    console.log(
+      `[Plaid Component] Stored ${creditCards.length} credit cards, ${mortgages.length} mortgages, ${studentLoans.length} student loans`
+    );
 
     return {
       creditCards: creditCards.length,
+      mortgages: mortgages.length,
+      studentLoans: studentLoans.length,
     };
   },
 });
@@ -699,5 +841,266 @@ export const completeReauth = action({
     return {
       success: true,
     };
+  },
+});
+
+// =============================================================================
+// ENRICH TRANSACTIONS
+// =============================================================================
+
+/**
+ * Enrich transactions with merchant data using Plaid Enrich API.
+ *
+ * Takes a batch of transactions and enriches them with:
+ * - Counterparty name, type, and entity ID
+ * - Merchant logo URL and website
+ * - Confidence level
+ *
+ * Results are cached in merchantEnrichments table and linked to transactions.
+ */
+export const enrichTransactions = action({
+  args: {
+    transactions: v.array(
+      v.object({
+        id: v.string(),
+        description: v.string(),
+        amount: v.number(),
+        iso_currency_code: v.optional(v.string()),
+        mcc: v.optional(v.string()),
+        location: v.optional(
+          v.object({
+            city: v.optional(v.string()),
+            region: v.optional(v.string()),
+            postal_code: v.optional(v.string()),
+            country: v.optional(v.string()),
+          })
+        ),
+      })
+    ),
+    ...plaidConfigArgs,
+  },
+  returns: v.object({
+    enriched: v.number(),
+    failed: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    console.log(
+      `[Plaid Component] Enriching ${args.transactions.length} transactions...`
+    );
+
+    if (args.transactions.length === 0) {
+      return { enriched: 0, failed: 0 };
+    }
+
+    const plaidClient = initPlaidClient(
+      args.plaidClientId,
+      args.plaidSecret,
+      args.plaidEnv
+    );
+
+    // Prepare transactions for Plaid Enrich API
+    const enrichmentTransactions = args.transactions.map((tx) => ({
+      id: tx.id,
+      description: tx.description,
+      amount: tx.amount,
+      iso_currency_code: tx.iso_currency_code ?? "USD",
+      mcc: tx.mcc,
+      location: tx.location
+        ? {
+            city: tx.location.city,
+            region: tx.location.region,
+            postal_code: tx.location.postal_code,
+            country: tx.location.country,
+          }
+        : undefined,
+    }));
+
+    try {
+      const response = await plaidClient.transactionsEnrich({
+        account_type: "depository",
+        transactions: enrichmentTransactions as any,
+      });
+
+      let enriched = 0;
+      let failed = 0;
+
+      // Cast to any since Plaid SDK types may not include all enrichment properties
+      for (const enrichedTx of response.data.enriched_transactions as any[]) {
+        const counterparty = enrichedTx.counterparties?.[0];
+
+        if (counterparty?.entity_id) {
+          // Upsert merchant enrichment
+          await ctx.runMutation(internal.private.upsertMerchantEnrichment, {
+            merchantId: counterparty.entity_id,
+            merchantName: counterparty.name,
+            logoUrl: counterparty.logo_url ?? undefined,
+            categoryPrimary: enrichedTx.personal_finance_category?.primary,
+            categoryDetailed: enrichedTx.personal_finance_category?.detailed,
+            categoryIconUrl:
+              enrichedTx.personal_finance_category_icon_url ?? undefined,
+            website: counterparty.website ?? undefined,
+            phoneNumber: counterparty.phone_number ?? undefined,
+            confidenceLevel:
+              (counterparty.confidence_level as
+                | "VERY_HIGH"
+                | "HIGH"
+                | "MEDIUM"
+                | "LOW"
+                | "UNKNOWN") ?? "UNKNOWN",
+          });
+
+          // Update transaction with enrichment data
+          await ctx.runMutation(internal.private.updateTransactionEnrichment, {
+            transactionId: enrichedTx.id,
+            merchantId: counterparty.entity_id,
+            enrichmentData: {
+              counterpartyName: counterparty.name,
+              counterpartyType: counterparty.type,
+              counterpartyEntityId: counterparty.entity_id,
+              counterpartyConfidence: counterparty.confidence_level,
+              counterpartyLogoUrl: counterparty.logo_url ?? undefined,
+              counterpartyWebsite: counterparty.website ?? undefined,
+              counterpartyPhoneNumber: counterparty.phone_number ?? undefined,
+              enrichedAt: Date.now(),
+            },
+          });
+
+          enriched++;
+        } else {
+          failed++;
+        }
+      }
+
+      console.log(
+        `[Plaid Component] Enriched ${enriched} transactions, ${failed} failed`
+      );
+
+      return { enriched, failed };
+    } catch (error: any) {
+      console.error(
+        "[Plaid Component] Transaction enrichment failed:",
+        formatErrorForLog(error)
+      );
+      throw error;
+    }
+  },
+});
+
+// =============================================================================
+// TRIGGER TRANSACTIONS REFRESH
+// =============================================================================
+
+/**
+ * Trigger a transactions refresh for a Plaid item.
+ *
+ * Forces Plaid to fetch the latest transactions from the financial institution.
+ * This is useful when you need up-to-date data without waiting for webhooks.
+ *
+ * Note: Some institutions (e.g., Capital One) don't support this endpoint
+ * and will return PRODUCTS_NOT_SUPPORTED.
+ */
+export const triggerTransactionsRefresh = action({
+  args: {
+    plaidItemId: v.string(),
+    ...plaidConfigArgs,
+  },
+  returns: v.object({
+    success: v.boolean(),
+    requestId: v.optional(v.string()),
+    error: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    console.log(
+      "[Plaid Component] Triggering transactions refresh for item:",
+      args.plaidItemId
+    );
+
+    // Get item to retrieve encrypted access token
+    const item = await ctx.runQuery(internal.private.getPlaidItem, {
+      plaidItemId: args.plaidItemId,
+    });
+
+    if (!item) {
+      console.error("[Plaid Component] Item not found:", args.plaidItemId);
+      return {
+        success: false,
+        error: "Item not found",
+      };
+    }
+
+    // Decrypt access token
+    const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
+
+    const plaidClient = initPlaidClient(
+      args.plaidClientId,
+      args.plaidSecret,
+      args.plaidEnv
+    );
+
+    try {
+      const response = await plaidClient.transactionsRefresh({
+        access_token: accessToken,
+      });
+
+      console.log(
+        "[Plaid Component] Transactions refresh triggered successfully:",
+        response.data.request_id
+      );
+
+      return {
+        success: true,
+        requestId: response.data.request_id,
+      };
+    } catch (error: any) {
+      const errorType = error?.response?.data?.error_type;
+      const errorCode = error?.response?.data?.error_code;
+
+      // Handle PRODUCTS_NOT_SUPPORTED gracefully (some institutions don't support refresh)
+      if (
+        errorCode === "PRODUCTS_NOT_SUPPORTED" ||
+        errorType === "PRODUCTS_NOT_SUPPORTED"
+      ) {
+        console.warn(
+          "[Plaid Component] Transactions refresh not supported for this institution"
+        );
+        return {
+          success: false,
+          error: "PRODUCTS_NOT_SUPPORTED",
+        };
+      }
+
+      // Handle rate limiting
+      if (errorCode === "RATE_LIMIT_EXCEEDED") {
+        console.warn("[Plaid Component] Rate limit exceeded for refresh");
+        return {
+          success: false,
+          error: "RATE_LIMIT_EXCEEDED",
+        };
+      }
+
+      // Check if re-auth is needed
+      if (requiresReauth(error)) {
+        await ctx.runMutation(internal.private.updateItemStatus, {
+          plaidItemId: args.plaidItemId,
+          status: "needs_reauth",
+          syncError: "Re-authentication required",
+        });
+
+        return {
+          success: false,
+          error: "REQUIRES_REAUTH",
+        };
+      }
+
+      console.error(
+        "[Plaid Component] Transactions refresh failed:",
+        formatErrorForLog(error)
+      );
+
+      return {
+        success: false,
+        error: errorCode ?? "UNKNOWN_ERROR",
+      };
+    }
   },
 });

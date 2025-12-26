@@ -381,12 +381,234 @@ export const getLiabilitiesByUser = query({
 });
 
 // =============================================================================
+// MORTGAGE LIABILITIES QUERIES
+// =============================================================================
+
+const propertyAddressValidator = v.optional(
+  v.object({
+    street: v.optional(v.string()),
+    city: v.optional(v.string()),
+    region: v.optional(v.string()),
+    postalCode: v.optional(v.string()),
+    country: v.optional(v.string()),
+  })
+);
+
+const mortgageLiabilityReturnValidator = v.object({
+  _id: v.string(),
+  userId: v.string(),
+  plaidItemId: v.string(),
+  accountId: v.string(),
+  accountNumber: v.optional(v.string()),
+  loanTerm: v.optional(v.string()),
+  loanTypeDescription: v.optional(v.string()),
+  originationDate: v.optional(v.string()),
+  maturityDate: v.optional(v.string()),
+  interestRatePercentage: v.number(),
+  interestRateType: v.optional(v.string()),
+  lastPaymentAmount: v.optional(v.number()),
+  lastPaymentDate: v.optional(v.string()),
+  nextMonthlyPayment: v.optional(v.number()),
+  nextPaymentDueDate: v.optional(v.string()),
+  originationPrincipalAmount: v.optional(v.number()),
+  currentLateFee: v.optional(v.number()),
+  escrowBalance: v.optional(v.number()),
+  pastDueAmount: v.optional(v.number()),
+  ytdInterestPaid: v.optional(v.number()),
+  ytdPrincipalPaid: v.optional(v.number()),
+  hasPmi: v.optional(v.boolean()),
+  hasPrepaymentPenalty: v.optional(v.boolean()),
+  propertyAddress: propertyAddressValidator,
+  createdAt: v.number(),
+  updatedAt: v.number(),
+});
+
+/**
+ * Get all mortgage liabilities for a user.
+ */
+export const getMortgageLiabilitiesByUser = query({
+  args: { userId: v.string() },
+  returns: v.array(mortgageLiabilityReturnValidator),
+  handler: async (ctx, args) => {
+    const mortgages = await ctx.db
+      .query("plaidMortgageLiabilities")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    return mortgages.map((m) => ({
+      ...m,
+      _id: String(m._id),
+    }));
+  },
+});
+
+/**
+ * Get mortgage liability for a specific account.
+ */
+export const getMortgageLiabilityByAccount = query({
+  args: { accountId: v.string() },
+  returns: v.union(mortgageLiabilityReturnValidator, v.null()),
+  handler: async (ctx, args) => {
+    const mortgage = await ctx.db
+      .query("plaidMortgageLiabilities")
+      .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+      .first();
+
+    if (!mortgage) return null;
+
+    return {
+      ...mortgage,
+      _id: String(mortgage._id),
+    };
+  },
+});
+
+// =============================================================================
+// STUDENT LOAN LIABILITIES QUERIES
+// =============================================================================
+
+const servicerAddressValidator = v.optional(
+  v.object({
+    street: v.optional(v.string()),
+    city: v.optional(v.string()),
+    region: v.optional(v.string()),
+    postalCode: v.optional(v.string()),
+    country: v.optional(v.string()),
+  })
+);
+
+const loanStatusValidator = v.optional(
+  v.object({
+    type: v.optional(v.string()),
+    endDate: v.optional(v.string()),
+  })
+);
+
+const repaymentPlanValidator = v.optional(
+  v.object({
+    type: v.optional(v.string()),
+    description: v.optional(v.string()),
+  })
+);
+
+const studentLoanLiabilityReturnValidator = v.object({
+  _id: v.string(),
+  userId: v.string(),
+  plaidItemId: v.string(),
+  accountId: v.string(),
+  accountNumber: v.optional(v.string()),
+  loanName: v.optional(v.string()),
+  guarantor: v.optional(v.string()),
+  sequenceNumber: v.optional(v.string()),
+  disbursementDates: v.optional(v.array(v.string())),
+  originationDate: v.optional(v.string()),
+  expectedPayoffDate: v.optional(v.string()),
+  lastStatementIssueDate: v.optional(v.string()),
+  interestRatePercentage: v.number(),
+  lastPaymentAmount: v.optional(v.number()),
+  lastPaymentDate: v.optional(v.string()),
+  minimumPaymentAmount: v.optional(v.number()),
+  nextPaymentDueDate: v.optional(v.string()),
+  paymentReferenceNumber: v.optional(v.string()),
+  originationPrincipalAmount: v.optional(v.number()),
+  outstandingInterestAmount: v.optional(v.number()),
+  lastStatementBalance: v.optional(v.number()),
+  ytdInterestPaid: v.optional(v.number()),
+  ytdPrincipalPaid: v.optional(v.number()),
+  isOverdue: v.optional(v.boolean()),
+  loanStatus: loanStatusValidator,
+  repaymentPlan: repaymentPlanValidator,
+  servicerAddress: servicerAddressValidator,
+  createdAt: v.number(),
+  updatedAt: v.number(),
+});
+
+/**
+ * Get all student loan liabilities for a user.
+ */
+export const getStudentLoanLiabilitiesByUser = query({
+  args: { userId: v.string() },
+  returns: v.array(studentLoanLiabilityReturnValidator),
+  handler: async (ctx, args) => {
+    const studentLoans = await ctx.db
+      .query("plaidStudentLoanLiabilities")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    return studentLoans.map((sl) => ({
+      ...sl,
+      _id: String(sl._id),
+    }));
+  },
+});
+
+/**
+ * Get student loan liability for a specific account.
+ */
+export const getStudentLoanLiabilityByAccount = query({
+  args: { accountId: v.string() },
+  returns: v.union(studentLoanLiabilityReturnValidator, v.null()),
+  handler: async (ctx, args) => {
+    const studentLoan = await ctx.db
+      .query("plaidStudentLoanLiabilities")
+      .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+      .first();
+
+    if (!studentLoan) return null;
+
+    return {
+      ...studentLoan,
+      _id: String(studentLoan._id),
+    };
+  },
+});
+
+// =============================================================================
+// MERCHANT ENRICHMENT QUERIES
+// =============================================================================
+
+const merchantEnrichmentReturnValidator = v.object({
+  _id: v.string(),
+  merchantId: v.string(),
+  merchantName: v.string(),
+  logoUrl: v.optional(v.string()),
+  categoryPrimary: v.optional(v.string()),
+  categoryDetailed: v.optional(v.string()),
+  categoryIconUrl: v.optional(v.string()),
+  website: v.optional(v.string()),
+  phoneNumber: v.optional(v.string()),
+  confidenceLevel: v.string(),
+  lastEnriched: v.number(),
+});
+
+/**
+ * Get merchant enrichment data by merchant ID.
+ */
+export const getMerchantEnrichment = query({
+  args: { merchantId: v.string() },
+  returns: v.union(merchantEnrichmentReturnValidator, v.null()),
+  handler: async (ctx, args) => {
+    const merchant = await ctx.db
+      .query("merchantEnrichments")
+      .withIndex("by_merchant", (q) => q.eq("merchantId", args.merchantId))
+      .first();
+
+    if (!merchant) return null;
+
+    return {
+      ...merchant,
+      _id: String(merchant._id),
+    };
+  },
+});
+
+// =============================================================================
 // PUBLIC MUTATIONS
 // =============================================================================
 
 /**
  * Delete a plaidItem and all associated data.
- * Cascades to accounts, transactions, liabilities, and recurring streams.
+ * Cascades to accounts, transactions, liabilities (credit cards, mortgages, student loans), and recurring streams.
  */
 export const deletePlaidItem = mutation({
   args: { plaidItemId: v.string() },
@@ -395,7 +617,9 @@ export const deletePlaidItem = mutation({
       items: v.number(),
       accounts: v.number(),
       transactions: v.number(),
-      liabilities: v.number(),
+      creditCardLiabilities: v.number(),
+      mortgageLiabilities: v.number(),
+      studentLoanLiabilities: v.number(),
       recurringStreams: v.number(),
     }),
   }),
@@ -406,7 +630,15 @@ export const deletePlaidItem = mutation({
 
     if (!item) {
       return {
-        deleted: { items: 0, accounts: 0, transactions: 0, liabilities: 0, recurringStreams: 0 },
+        deleted: {
+          items: 0,
+          accounts: 0,
+          transactions: 0,
+          creditCardLiabilities: 0,
+          mortgageLiabilities: 0,
+          studentLoanLiabilities: 0,
+          recurringStreams: 0,
+        },
       };
     }
 
@@ -433,14 +665,34 @@ export const deletePlaidItem = mutation({
       await ctx.db.delete(txn._id);
     }
 
-    // Delete associated liabilities
-    const liabilities = await ctx.db
+    // Delete associated credit card liabilities
+    const creditCardLiabilities = await ctx.db
       .query("plaidCreditCardLiabilities")
       .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
       .collect();
 
-    for (const l of liabilities) {
+    for (const l of creditCardLiabilities) {
       await ctx.db.delete(l._id);
+    }
+
+    // Delete associated mortgage liabilities
+    const mortgageLiabilities = await ctx.db
+      .query("plaidMortgageLiabilities")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .collect();
+
+    for (const m of mortgageLiabilities) {
+      await ctx.db.delete(m._id);
+    }
+
+    // Delete associated student loan liabilities
+    const studentLoanLiabilities = await ctx.db
+      .query("plaidStudentLoanLiabilities")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .collect();
+
+    for (const sl of studentLoanLiabilities) {
+      await ctx.db.delete(sl._id);
     }
 
     // Delete associated recurring streams
@@ -458,7 +710,9 @@ export const deletePlaidItem = mutation({
         items: 1,
         accounts: accounts.length,
         transactions: transactions.length,
-        liabilities: liabilities.length,
+        creditCardLiabilities: creditCardLiabilities.length,
+        mortgageLiabilities: mortgageLiabilities.length,
+        studentLoanLiabilities: studentLoanLiabilities.length,
         recurringStreams: recurringStreams.length,
       },
     };

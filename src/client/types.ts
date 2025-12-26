@@ -157,6 +157,8 @@ export interface SyncTransactionsResult {
  */
 export interface FetchLiabilitiesResult {
   creditCards: number;
+  mortgages: number;
+  studentLoans: number;
 }
 
 /**
@@ -188,6 +190,23 @@ export interface CreateUpdateLinkTokenResult {
  */
 export interface CompleteReauthResult {
   success: boolean;
+}
+
+/**
+ * Result from triggerTransactionsRefresh.
+ */
+export interface TriggerTransactionsRefreshResult {
+  success: boolean;
+  requestId?: string;
+  error?: string;
+}
+
+/**
+ * Result from enrichTransactions.
+ */
+export interface EnrichTransactionsResult {
+  enriched: number;
+  failed: number;
 }
 
 // =============================================================================

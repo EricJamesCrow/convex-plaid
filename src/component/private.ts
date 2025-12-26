@@ -284,6 +284,105 @@ export const setItemError = internalMutation({
 });
 
 // =============================================================================
+// CIRCUIT BREAKER - Queries & Mutations
+// =============================================================================
+
+/**
+ * Get plaidItem with circuit breaker fields.
+ * Used by circuit breaker module.
+ */
+export const getPlaidItemWithCircuit = internalQuery({
+  args: { plaidItemId: v.string() },
+  returns: v.union(
+    v.object({
+      _id: v.any(),
+      circuitState: v.optional(v.string()),
+      consecutiveFailures: v.optional(v.number()),
+      consecutiveSuccesses: v.optional(v.number()),
+      lastFailureAt: v.optional(v.number()),
+      nextRetryAt: v.optional(v.number()),
+    }),
+    v.null()
+  ),
+  handler: async (ctx, args) => {
+    const items = await ctx.db.query("plaidItems").collect();
+    const item = items.find((i) => String(i._id) === args.plaidItemId);
+
+    if (!item) return null;
+
+    return {
+      _id: item._id,
+      circuitState: item.circuitState,
+      consecutiveFailures: item.consecutiveFailures,
+      consecutiveSuccesses: item.consecutiveSuccesses,
+      lastFailureAt: item.lastFailureAt,
+      nextRetryAt: item.nextRetryAt,
+    };
+  },
+});
+
+/**
+ * Update circuit breaker state for a plaidItem.
+ */
+export const updateCircuitState = internalMutation({
+  args: {
+    plaidItemId: v.string(),
+    circuitState: v.optional(
+      v.union(v.literal("closed"), v.literal("open"), v.literal("half_open"))
+    ),
+    consecutiveFailures: v.optional(v.number()),
+    consecutiveSuccesses: v.optional(v.number()),
+    lastFailureAt: v.optional(v.number()),
+    nextRetryAt: v.optional(v.union(v.number(), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const items = await ctx.db.query("plaidItems").collect();
+    const item = items.find((i) => String(i._id) === args.plaidItemId);
+
+    if (!item) return null;
+
+    const updates: Record<string, unknown> = {};
+    if (args.circuitState !== undefined) updates.circuitState = args.circuitState;
+    if (args.consecutiveFailures !== undefined)
+      updates.consecutiveFailures = args.consecutiveFailures;
+    if (args.consecutiveSuccesses !== undefined)
+      updates.consecutiveSuccesses = args.consecutiveSuccesses;
+    if (args.lastFailureAt !== undefined) updates.lastFailureAt = args.lastFailureAt;
+    if (args.nextRetryAt !== undefined)
+      updates.nextRetryAt = args.nextRetryAt === null ? undefined : args.nextRetryAt;
+
+    await ctx.db.patch(item._id, updates);
+
+    return null;
+  },
+});
+
+/**
+ * Reset circuit breaker to closed state.
+ */
+export const resetCircuitBreaker = internalMutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const items = await ctx.db.query("plaidItems").collect();
+    const item = items.find((i) => String(i._id) === args.plaidItemId);
+
+    if (!item) return null;
+
+    await ctx.db.patch(item._id, {
+      circuitState: "closed",
+      consecutiveFailures: 0,
+      consecutiveSuccesses: 0,
+      lastFailureAt: undefined,
+      nextRetryAt: undefined,
+    });
+
+    return null;
+  },
+});
+
+// =============================================================================
 // INTERNAL MUTATIONS - Accounts
 // =============================================================================
 
@@ -719,5 +818,373 @@ export const tombstoneStreams = internalMutation({
     }
 
     return { tombstoned };
+  },
+});
+
+// =============================================================================
+// INTERNAL MUTATIONS - Mortgage Liabilities
+// =============================================================================
+
+const addressValidator = v.object({
+  street: v.optional(v.string()),
+  city: v.optional(v.string()),
+  region: v.optional(v.string()),
+  postalCode: v.optional(v.string()),
+  country: v.optional(v.string()),
+});
+
+/**
+ * Upsert mortgage liability by accountId.
+ */
+export const upsertMortgageLiability = internalMutation({
+  args: {
+    userId: v.string(),
+    plaidItemId: v.string(),
+    accountId: v.string(),
+    accountNumber: v.optional(v.string()),
+    loanTerm: v.optional(v.string()),
+    loanTypeDescription: v.optional(v.string()),
+    originationDate: v.optional(v.string()),
+    maturityDate: v.optional(v.string()),
+    interestRatePercentage: v.number(),
+    interestRateType: v.optional(v.string()),
+    lastPaymentAmount: v.optional(v.number()),
+    lastPaymentDate: v.optional(v.string()),
+    nextMonthlyPayment: v.optional(v.number()),
+    nextPaymentDueDate: v.optional(v.string()),
+    originationPrincipalAmount: v.optional(v.number()),
+    currentLateFee: v.optional(v.number()),
+    escrowBalance: v.optional(v.number()),
+    pastDueAmount: v.optional(v.number()),
+    ytdInterestPaid: v.optional(v.number()),
+    ytdPrincipalPaid: v.optional(v.number()),
+    hasPmi: v.optional(v.boolean()),
+    hasPrepaymentPenalty: v.optional(v.boolean()),
+    propertyAddress: v.optional(addressValidator),
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+
+    const existing = await ctx.db
+      .query("plaidMortgageLiabilities")
+      .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+      .first();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        ...args,
+        updatedAt: now,
+      });
+      return String(existing._id);
+    }
+
+    const id = await ctx.db.insert("plaidMortgageLiabilities", {
+      ...args,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return String(id);
+  },
+});
+
+// =============================================================================
+// INTERNAL MUTATIONS - Student Loan Liabilities
+// =============================================================================
+
+const loanStatusValidator = v.object({
+  type: v.optional(v.string()),
+  endDate: v.optional(v.string()),
+});
+
+const repaymentPlanValidator = v.object({
+  type: v.optional(v.string()),
+  description: v.optional(v.string()),
+});
+
+/**
+ * Upsert student loan liability by accountId.
+ */
+export const upsertStudentLoanLiability = internalMutation({
+  args: {
+    userId: v.string(),
+    plaidItemId: v.string(),
+    accountId: v.string(),
+    accountNumber: v.optional(v.string()),
+    loanName: v.optional(v.string()),
+    guarantor: v.optional(v.string()),
+    sequenceNumber: v.optional(v.string()),
+    disbursementDates: v.optional(v.array(v.string())),
+    originationDate: v.optional(v.string()),
+    expectedPayoffDate: v.optional(v.string()),
+    lastStatementIssueDate: v.optional(v.string()),
+    interestRatePercentage: v.number(),
+    lastPaymentAmount: v.optional(v.number()),
+    lastPaymentDate: v.optional(v.string()),
+    minimumPaymentAmount: v.optional(v.number()),
+    nextPaymentDueDate: v.optional(v.string()),
+    paymentReferenceNumber: v.optional(v.string()),
+    originationPrincipalAmount: v.optional(v.number()),
+    outstandingInterestAmount: v.optional(v.number()),
+    lastStatementBalance: v.optional(v.number()),
+    ytdInterestPaid: v.optional(v.number()),
+    ytdPrincipalPaid: v.optional(v.number()),
+    isOverdue: v.optional(v.boolean()),
+    loanStatus: v.optional(loanStatusValidator),
+    repaymentPlan: v.optional(repaymentPlanValidator),
+    servicerAddress: v.optional(addressValidator),
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+
+    const existing = await ctx.db
+      .query("plaidStudentLoanLiabilities")
+      .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+      .first();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        ...args,
+        updatedAt: now,
+      });
+      return String(existing._id);
+    }
+
+    const id = await ctx.db.insert("plaidStudentLoanLiabilities", {
+      ...args,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return String(id);
+  },
+});
+
+// =============================================================================
+// INTERNAL MUTATIONS - Merchant Enrichment
+// =============================================================================
+
+const confidenceLevelValidator = v.union(
+  v.literal("VERY_HIGH"),
+  v.literal("HIGH"),
+  v.literal("MEDIUM"),
+  v.literal("LOW"),
+  v.literal("UNKNOWN")
+);
+
+/**
+ * Upsert merchant enrichment by merchantId.
+ * Shared across all users.
+ */
+export const upsertMerchantEnrichment = internalMutation({
+  args: {
+    merchantId: v.string(),
+    merchantName: v.string(),
+    logoUrl: v.optional(v.string()),
+    categoryPrimary: v.optional(v.string()),
+    categoryDetailed: v.optional(v.string()),
+    categoryIconUrl: v.optional(v.string()),
+    website: v.optional(v.string()),
+    phoneNumber: v.optional(v.string()),
+    confidenceLevel: confidenceLevelValidator,
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("merchantEnrichments")
+      .withIndex("by_merchant", (q) => q.eq("merchantId", args.merchantId))
+      .first();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        ...args,
+        lastEnriched: Date.now(),
+      });
+      return String(existing._id);
+    }
+
+    const id = await ctx.db.insert("merchantEnrichments", {
+      ...args,
+      lastEnriched: Date.now(),
+    });
+
+    return String(id);
+  },
+});
+
+/**
+ * Link transaction to merchant by updating merchantId field.
+ */
+export const linkTransactionToMerchant = internalMutation({
+  args: {
+    transactionId: v.string(),
+    merchantId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const transaction = await ctx.db
+      .query("plaidTransactions")
+      .withIndex("by_transaction_id", (q) =>
+        q.eq("transactionId", args.transactionId)
+      )
+      .first();
+
+    if (!transaction) return false;
+
+    await ctx.db.patch(transaction._id, {
+      merchantId: args.merchantId,
+      updatedAt: Date.now(),
+    });
+
+    return true;
+  },
+});
+
+/**
+ * Update transaction with enrichment data.
+ */
+export const updateTransactionEnrichment = internalMutation({
+  args: {
+    transactionId: v.string(),
+    merchantId: v.optional(v.string()),
+    enrichmentData: v.object({
+      counterpartyName: v.optional(v.string()),
+      counterpartyType: v.optional(v.string()),
+      counterpartyEntityId: v.optional(v.string()),
+      counterpartyConfidence: v.optional(v.string()),
+      counterpartyLogoUrl: v.optional(v.string()),
+      counterpartyWebsite: v.optional(v.string()),
+      counterpartyPhoneNumber: v.optional(v.string()),
+      enrichedAt: v.optional(v.number()),
+    }),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const transaction = await ctx.db
+      .query("plaidTransactions")
+      .withIndex("by_transaction_id", (q) =>
+        q.eq("transactionId", args.transactionId)
+      )
+      .first();
+
+    if (!transaction) return false;
+
+    await ctx.db.patch(transaction._id, {
+      merchantId: args.merchantId,
+      enrichmentData: args.enrichmentData,
+      updatedAt: Date.now(),
+    });
+
+    return true;
+  },
+});
+
+// =============================================================================
+// INTERNAL MUTATIONS - Webhook Logs
+// =============================================================================
+
+/**
+ * Create a webhook log entry.
+ */
+export const createWebhookLog = internalMutation({
+  args: {
+    webhookId: v.string(),
+    itemId: v.string(),
+    webhookType: v.string(),
+    webhookCode: v.string(),
+    bodyHash: v.string(),
+    receivedAt: v.number(),
+    status: v.union(
+      v.literal("received"),
+      v.literal("processing"),
+      v.literal("processed"),
+      v.literal("duplicate"),
+      v.literal("failed")
+    ),
+    errorMessage: v.optional(v.string()),
+    scheduledFunctionId: v.optional(v.string()),
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const id = await ctx.db.insert("webhookLogs", args);
+    return String(id);
+  },
+});
+
+/**
+ * Update webhook log status.
+ */
+export const updateWebhookLogStatus = internalMutation({
+  args: {
+    webhookLogId: v.string(),
+    status: v.union(
+      v.literal("received"),
+      v.literal("processing"),
+      v.literal("processed"),
+      v.literal("duplicate"),
+      v.literal("failed")
+    ),
+    processedAt: v.optional(v.number()),
+    errorMessage: v.optional(v.string()),
+    scheduledFunctionId: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const logs = await ctx.db.query("webhookLogs").collect();
+    const log = logs.find((l) => String(l._id) === args.webhookLogId);
+
+    if (!log) return null;
+
+    await ctx.db.patch(log._id, {
+      status: args.status,
+      processedAt: args.processedAt,
+      errorMessage: args.errorMessage,
+      scheduledFunctionId: args.scheduledFunctionId,
+    });
+
+    return null;
+  },
+});
+
+/**
+ * Find recent webhook by body hash (for deduplication).
+ */
+export const findRecentByHash = internalQuery({
+  args: {
+    bodyHash: v.string(),
+    windowMs: v.number(),
+  },
+  returns: v.union(
+    v.object({
+      _id: v.string(),
+      webhookId: v.string(),
+      status: v.string(),
+      receivedAt: v.number(),
+    }),
+    v.null()
+  ),
+  handler: async (ctx, args) => {
+    const cutoff = Date.now() - args.windowMs;
+
+    const matches = await ctx.db
+      .query("webhookLogs")
+      .withIndex("by_body_hash", (q) => q.eq("bodyHash", args.bodyHash))
+      .collect();
+
+    // Find first match within time window that isn't a duplicate
+    const recent = matches.find(
+      (log) => log.receivedAt >= cutoff && log.status !== "duplicate"
+    );
+
+    if (!recent) return null;
+
+    return {
+      _id: String(recent._id),
+      webhookId: recent.webhookId,
+      status: recent.status,
+      receivedAt: recent.receivedAt,
+    };
   },
 });

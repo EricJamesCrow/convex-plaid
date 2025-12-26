@@ -342,3 +342,64 @@ export function isHistoricalUpdateWebhook(
 ): boolean {
   return webhookType === "TRANSACTIONS" && webhookCode === "HISTORICAL_UPDATE";
 }
+
+// =============================================================================
+// WEBHOOK DEDUPLICATION
+// =============================================================================
+
+/**
+ * Configuration for webhook deduplication
+ */
+export const DEDUP_CONFIG = {
+  /** Time window in ms to check for duplicates (5 minutes) */
+  windowMs: 5 * 60 * 1000,
+} as const;
+
+/**
+ * Generate a unique webhook ID for logging and tracking.
+ *
+ * @param itemId - Plaid item_id
+ * @param webhookCode - Webhook code (e.g., "SYNC_UPDATES_AVAILABLE")
+ * @param timestamp - Unix timestamp
+ * @returns Unique webhook ID string
+ */
+export function generateWebhookId(
+  itemId: string,
+  webhookCode: string,
+  timestamp: number
+): string {
+  return `${itemId}_${webhookCode}_${timestamp}`;
+}
+
+/**
+ * Create a webhook log entry structure.
+ *
+ * @param params - Webhook parameters
+ * @returns Webhook log entry (ready for mutation)
+ */
+export function createWebhookLogEntry(params: {
+  itemId: string;
+  webhookType: string;
+  webhookCode: string;
+  bodyHash: string;
+  status?: "received" | "processing" | "processed" | "duplicate" | "failed";
+}): {
+  webhookId: string;
+  itemId: string;
+  webhookType: string;
+  webhookCode: string;
+  bodyHash: string;
+  receivedAt: number;
+  status: "received" | "processing" | "processed" | "duplicate" | "failed";
+} {
+  const receivedAt = Date.now();
+  return {
+    webhookId: generateWebhookId(params.itemId, params.webhookCode, receivedAt),
+    itemId: params.itemId,
+    webhookType: params.webhookType,
+    webhookCode: params.webhookCode,
+    bodyHash: params.bodyHash,
+    receivedAt,
+    status: params.status ?? "received",
+  };
+}

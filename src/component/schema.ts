@@ -36,6 +36,15 @@ export default defineSchema({
     syncError: v.optional(v.string()), // Error message from last sync attempt
     createdAt: v.number(), // Unix timestamp
     lastSyncedAt: v.optional(v.number()), // Last successful sync timestamp
+
+    // Circuit breaker state (for resilience)
+    circuitState: v.optional(
+      v.union(v.literal("closed"), v.literal("open"), v.literal("half_open"))
+    ),
+    consecutiveFailures: v.optional(v.number()), // Failures before circuit opens
+    consecutiveSuccesses: v.optional(v.number()), // Successes in half_open before closing
+    lastFailureAt: v.optional(v.number()), // Unix timestamp of last failure
+    nextRetryAt: v.optional(v.number()), // When circuit transitions to half_open
   })
     .index("by_user", ["userId"])
     .index("by_item_id", ["itemId"]),
@@ -98,13 +107,29 @@ export default defineSchema({
     // Additional data
     paymentChannel: v.optional(v.string()), // "online", "in store"
 
+    // Merchant enrichment (from Plaid Enrich API)
+    merchantId: v.optional(v.string()), // FK to merchantEnrichments table
+    enrichmentData: v.optional(
+      v.object({
+        counterpartyName: v.optional(v.string()),
+        counterpartyType: v.optional(v.string()),
+        counterpartyEntityId: v.optional(v.string()),
+        counterpartyConfidence: v.optional(v.string()),
+        counterpartyLogoUrl: v.optional(v.string()),
+        counterpartyWebsite: v.optional(v.string()),
+        counterpartyPhoneNumber: v.optional(v.string()),
+        enrichedAt: v.optional(v.number()),
+      })
+    ),
+
     createdAt: v.number(),
     updatedAt: v.optional(v.number()), // Track modifications from sync
   })
     .index("by_account", ["accountId"])
     .index("by_transaction_id", ["transactionId"])
     .index("by_date", ["userId", "date"])
-    .index("by_plaid_item", ["plaidItemId"]),
+    .index("by_plaid_item", ["plaidItemId"])
+    .index("by_merchant", ["merchantId"]),
 
   /**
    * Plaid Credit Card Liabilities - APRs, payment info, due dates
@@ -199,4 +224,194 @@ export default defineSchema({
     .index("by_stream_id", ["streamId"])
     .index("by_plaid_item", ["plaidItemId"])
     .index("by_status", ["userId", "status", "isActive"]),
+
+  /**
+   * Plaid Mortgage Liabilities - Mortgage loan details
+   *
+   * From Plaid /liabilities/get API (mortgage product).
+   * All monetary values in MILLIUNITS.
+   */
+  plaidMortgageLiabilities: defineTable({
+    userId: v.string(),
+    plaidItemId: v.string(), // String ID for component boundary
+    accountId: v.string(), // Plaid account_id
+
+    // Loan details
+    accountNumber: v.optional(v.string()),
+    loanTerm: v.optional(v.string()), // e.g., "30 year"
+    loanTypeDescription: v.optional(v.string()),
+
+    // Dates
+    originationDate: v.optional(v.string()), // ISO date
+    maturityDate: v.optional(v.string()), // ISO date
+
+    // Interest
+    interestRatePercentage: v.number(), // e.g., 6.5 for 6.5%
+    interestRateType: v.optional(v.string()), // "fixed" or "variable"
+
+    // Payments (MILLIUNITS)
+    lastPaymentAmount: v.optional(v.number()),
+    lastPaymentDate: v.optional(v.string()),
+    nextMonthlyPayment: v.optional(v.number()),
+    nextPaymentDueDate: v.optional(v.string()),
+
+    // Financial details (MILLIUNITS)
+    originationPrincipalAmount: v.optional(v.number()),
+    currentLateFee: v.optional(v.number()),
+    escrowBalance: v.optional(v.number()),
+    pastDueAmount: v.optional(v.number()),
+    ytdInterestPaid: v.optional(v.number()),
+    ytdPrincipalPaid: v.optional(v.number()),
+
+    // Flags
+    hasPmi: v.optional(v.boolean()),
+    hasPrepaymentPenalty: v.optional(v.boolean()),
+
+    // Property address
+    propertyAddress: v.optional(
+      v.object({
+        street: v.optional(v.string()),
+        city: v.optional(v.string()),
+        region: v.optional(v.string()),
+        postalCode: v.optional(v.string()),
+        country: v.optional(v.string()),
+      })
+    ),
+
+    // Metadata
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_account", ["accountId"])
+    .index("by_plaid_item", ["plaidItemId"]),
+
+  /**
+   * Plaid Student Loan Liabilities - Student loan details
+   *
+   * From Plaid /liabilities/get API (student loan product).
+   * All monetary values in MILLIUNITS.
+   */
+  plaidStudentLoanLiabilities: defineTable({
+    userId: v.string(),
+    plaidItemId: v.string(), // String ID for component boundary
+    accountId: v.string(), // Plaid account_id
+
+    // Loan details
+    accountNumber: v.optional(v.string()),
+    loanName: v.optional(v.string()),
+    guarantor: v.optional(v.string()),
+    sequenceNumber: v.optional(v.string()),
+
+    // Dates
+    disbursementDates: v.optional(v.array(v.string())), // Array of ISO dates
+    originationDate: v.optional(v.string()),
+    expectedPayoffDate: v.optional(v.string()),
+    lastStatementIssueDate: v.optional(v.string()),
+
+    // Interest
+    interestRatePercentage: v.number(), // e.g., 5.5 for 5.5%
+
+    // Payments (MILLIUNITS)
+    lastPaymentAmount: v.optional(v.number()),
+    lastPaymentDate: v.optional(v.string()),
+    minimumPaymentAmount: v.optional(v.number()),
+    nextPaymentDueDate: v.optional(v.string()),
+    paymentReferenceNumber: v.optional(v.string()),
+
+    // Financial details (MILLIUNITS)
+    originationPrincipalAmount: v.optional(v.number()),
+    outstandingInterestAmount: v.optional(v.number()),
+    lastStatementBalance: v.optional(v.number()),
+    ytdInterestPaid: v.optional(v.number()),
+    ytdPrincipalPaid: v.optional(v.number()),
+
+    // Status
+    isOverdue: v.optional(v.boolean()),
+    loanStatus: v.optional(
+      v.object({
+        type: v.optional(v.string()), // e.g., "repayment", "deferment"
+        endDate: v.optional(v.string()),
+      })
+    ),
+
+    // Repayment plan
+    repaymentPlan: v.optional(
+      v.object({
+        type: v.optional(v.string()), // e.g., "standard", "income-driven"
+        description: v.optional(v.string()),
+      })
+    ),
+
+    // Servicer address
+    servicerAddress: v.optional(
+      v.object({
+        street: v.optional(v.string()),
+        city: v.optional(v.string()),
+        region: v.optional(v.string()),
+        postalCode: v.optional(v.string()),
+        country: v.optional(v.string()),
+      })
+    ),
+
+    // Metadata
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_account", ["accountId"])
+    .index("by_plaid_item", ["plaidItemId"]),
+
+  /**
+   * Merchant Enrichments - Cached merchant data from Plaid Enrich API
+   *
+   * Shared across all users - one record per unique merchant.
+   * Used for displaying logos, websites, and merchant details.
+   */
+  merchantEnrichments: defineTable({
+    merchantId: v.string(), // Plaid entity_id (unique per merchant)
+    merchantName: v.string(), // Cleaned merchant name
+    logoUrl: v.optional(v.string()), // 100x100 PNG from Plaid CDN
+    categoryPrimary: v.optional(v.string()), // "FOOD_AND_DRINK"
+    categoryDetailed: v.optional(v.string()), // "FOOD_AND_DRINK_COFFEE"
+    categoryIconUrl: v.optional(v.string()), // Fallback category icon
+    website: v.optional(v.string()),
+    phoneNumber: v.optional(v.string()), // E.164 format
+    confidenceLevel: v.union(
+      v.literal("VERY_HIGH"),
+      v.literal("HIGH"),
+      v.literal("MEDIUM"),
+      v.literal("LOW"),
+      v.literal("UNKNOWN")
+    ),
+    lastEnriched: v.number(), // Timestamp of last enrichment
+  }).index("by_merchant", ["merchantId"]),
+
+  /**
+   * Webhook Logs - Audit trail for Plaid webhooks
+   *
+   * Used for deduplication (5-minute window) and debugging.
+   */
+  webhookLogs: defineTable({
+    webhookId: v.string(), // Unique identifier (itemId_code_timestamp)
+    itemId: v.string(), // Plaid item_id
+    webhookType: v.string(), // TRANSACTIONS, LIABILITIES, ITEM
+    webhookCode: v.string(), // SYNC_UPDATES_AVAILABLE, etc.
+    bodyHash: v.string(), // SHA-256 of request body (for deduplication)
+    receivedAt: v.number(), // Unix timestamp when received
+    processedAt: v.optional(v.number()), // Unix timestamp when processed
+    status: v.union(
+      v.literal("received"),
+      v.literal("processing"),
+      v.literal("processed"),
+      v.literal("duplicate"),
+      v.literal("failed")
+    ),
+    errorMessage: v.optional(v.string()),
+    scheduledFunctionId: v.optional(v.string()), // Convex scheduled function ID
+  })
+    .index("by_body_hash", ["bodyHash"])
+    .index("by_received_at", ["receivedAt"])
+    .index("by_item", ["itemId"])
+    .index("by_status", ["status"]),
 });

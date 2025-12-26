@@ -23,6 +23,8 @@ import type {
   FetchRecurringStreamsResult,
   CreateUpdateLinkTokenResult,
   CompleteReauthResult,
+  TriggerTransactionsRefreshResult,
+  EnrichTransactionsResult,
 } from "./types.js";
 import {
   verifyPlaidWebhook,
@@ -53,6 +55,8 @@ export type {
   FetchRecurringStreamsResult,
   CreateUpdateLinkTokenResult,
   CompleteReauthResult,
+  TriggerTransactionsRefreshResult,
+  EnrichTransactionsResult,
   ActionCtx,
 };
 
@@ -206,9 +210,7 @@ export class Plaid {
   }
 
   /**
-   * Fetch and store credit card liability data.
-   *
-   * Phase 1: Credit cards only.
+   * Fetch and store liability data (credit cards, mortgages, student loans).
    *
    * @param plaidItemId - Convex document ID of the plaidItem (as string)
    */
@@ -218,8 +220,77 @@ export class Plaid {
       plaidItemId: string;
     }
   ): Promise<FetchLiabilitiesResult> {
-    return await ctx.runAction(this.component.actions.fetchLiabilities, {
+    // Cast to any to handle generated types not being updated yet
+    const result = await ctx.runAction(this.component.actions.fetchLiabilities, {
       plaidItemId: args.plaidItemId,
+      plaidClientId: this.config.PLAID_CLIENT_ID,
+      plaidSecret: this.config.PLAID_SECRET,
+      plaidEnv: this.config.PLAID_ENV,
+      encryptionKey: this.config.ENCRYPTION_KEY,
+    });
+    return result as FetchLiabilitiesResult;
+  }
+
+  /**
+   * Trigger a transactions refresh for a Plaid item.
+   *
+   * Forces Plaid to fetch the latest transactions from the financial institution.
+   * This is useful when you need up-to-date data without waiting for webhooks.
+   *
+   * Note: Some institutions (e.g., Capital One) don't support this endpoint
+   * and will return PRODUCTS_NOT_SUPPORTED.
+   *
+   * @param plaidItemId - Convex document ID of the plaidItem (as string)
+   */
+  async triggerTransactionsRefresh(
+    ctx: ActionCtx,
+    args: {
+      plaidItemId: string;
+    }
+  ): Promise<TriggerTransactionsRefreshResult> {
+    // Cast to any since generated types may not include this action yet
+    const actions = this.component.actions as any;
+    return await ctx.runAction(actions.triggerTransactionsRefresh, {
+      plaidItemId: args.plaidItemId,
+      plaidClientId: this.config.PLAID_CLIENT_ID,
+      plaidSecret: this.config.PLAID_SECRET,
+      plaidEnv: this.config.PLAID_ENV,
+      encryptionKey: this.config.ENCRYPTION_KEY,
+    });
+  }
+
+  /**
+   * Enrich transactions with merchant data using Plaid Enrich API.
+   *
+   * Takes a batch of transactions and enriches them with:
+   * - Counterparty name, type, and entity ID
+   * - Merchant logo URL and website
+   * - Confidence level
+   *
+   * Results are cached in merchantEnrichments table and linked to transactions.
+   */
+  async enrichTransactions(
+    ctx: ActionCtx,
+    args: {
+      transactions: Array<{
+        id: string;
+        description: string;
+        amount: number;
+        iso_currency_code?: string;
+        mcc?: string;
+        location?: {
+          city?: string;
+          region?: string;
+          postal_code?: string;
+          country?: string;
+        };
+      }>;
+    }
+  ): Promise<EnrichTransactionsResult> {
+    // Cast to any since generated types may not include this action yet
+    const actions = this.component.actions as any;
+    return await ctx.runAction(actions.enrichTransactions, {
+      transactions: args.transactions,
       plaidClientId: this.config.PLAID_CLIENT_ID,
       plaidSecret: this.config.PLAID_SECRET,
       plaidEnv: this.config.PLAID_ENV,
