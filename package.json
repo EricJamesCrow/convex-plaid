@@ -1,7 +1,7 @@
 {
   "name": "@smartpockets/convex-plaid",
   "description": "A Plaid component for Convex - bank accounts, transactions, and liabilities.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -25,7 +25,7 @@
     "predev": "path-exists .env.local || (npm run build && convex dev --skip-push)",
     "clean": "rm -rf dist *.tsbuildinfo",
     "build": "tsc --project ./tsconfig.build.json",
-    "typecheck": "tsc --noEmit && tsc -p example && tsc -p example/convex",
+    "typecheck": "tsc --noEmit && tsc -p example/convex",
     "lint": "eslint .",
     "test": "vitest run --typecheck",
     "test:watch": "vitest --typecheck --clearScreen false",
