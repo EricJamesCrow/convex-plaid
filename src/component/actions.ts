@@ -276,22 +276,32 @@ export const fetchAccounts = action({
 // =============================================================================
 
 /**
- * Sync transactions using cursor-based pagination.
+ * Sync transactions using cursor-based pagination with optimistic locking.
+ *
+ * CRITICAL FIX: Uses sync locking to prevent race conditions from concurrent syncs
+ * (e.g., webhook + scheduled sync running simultaneously).
  *
  * Flow:
- * 1. Get plaidItem and decrypt access token
- * 2. Mark plaidItem as 'syncing'
- * 3. Fetch all pages of transactions (accumulate)
+ * 1. Acquire sync lock (prevents concurrent syncs)
+ * 2. Decrypt access token from lock result
+ * 3. Fetch pages of transactions (with limits to prevent memory explosion)
  * 4. Bulk upsert transactions (added/modified/removed)
- * 5. Update cursor and mark as 'active'
+ * 5. Complete sync atomically (update cursor with version check)
+ *
+ * Pagination:
+ * - Default: 10 pages max, 5000 transactions max per sync
+ * - If hasMore=true, caller should schedule another sync
  *
  * Error Handling:
- * - On auth error: Marks status as 'needs_reauth'
- * - On other error: Marks status as 'error'
+ * - Lock conflict: Returns immediately without error
+ * - Auth error: Marks status as 'needs_reauth'
+ * - Other error: Marks status as 'error'
  */
 export const syncTransactions = action({
   args: {
     plaidItemId: v.string(),
+    maxPages: v.optional(v.number()),
+    maxTransactions: v.optional(v.number()),
     ...plaidConfigArgs,
   },
   returns: v.object({
@@ -299,59 +309,73 @@ export const syncTransactions = action({
     modified: v.number(),
     removed: v.number(),
     cursor: v.string(),
+    hasMore: v.boolean(),
+    pagesProcessed: v.number(),
+    skipped: v.optional(v.boolean()), // True if sync was skipped due to lock conflict
+    skipReason: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
-    // Get plaidItem
-    const item = await ctx.runQuery(internal.private.getPlaidItem, {
+    console.log("[Plaid Component] Starting transaction sync...");
+
+    // Step 1: Acquire sync lock (prevents concurrent syncs)
+    const lockResult = await ctx.runMutation(internal.private.acquireSyncLock, {
       plaidItemId: args.plaidItemId,
     });
 
-    if (!item) {
-      throw new Error(`Plaid item not found: ${args.plaidItemId}`);
+    if (!lockResult.acquired) {
+      console.log(
+        `[Plaid Component] Sync skipped: ${lockResult.reason}`
+      );
+      return {
+        added: 0,
+        modified: 0,
+        removed: 0,
+        cursor: "",
+        hasMore: false,
+        pagesProcessed: 0,
+        skipped: true,
+        skipReason: lockResult.reason,
+      };
     }
 
-    const userId = item.userId;
-    const initialCursor = item.cursor ?? "";
+    const { syncVersion, cursor: initialCursor, accessToken: encryptedToken, userId } = lockResult;
 
-    // Decrypt access token
-    const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
-
-    // Mark as syncing
-    await ctx.runMutation(internal.private.updateItemStatus, {
-      plaidItemId: args.plaidItemId,
-      status: "syncing",
-    });
-
-    console.log("[Plaid Component] Starting transaction sync...");
     console.log(
-      `[Plaid Component] Initial cursor: ${initialCursor?.substring(0, 20) || "empty"}...`
+      `[Plaid Component] Lock acquired (version ${syncVersion}), cursor: ${initialCursor?.substring(0, 20) || "empty"}...`
     );
 
     try {
+      // Step 2: Decrypt access token
+      const accessToken = await decryptToken(encryptedToken, args.encryptionKey);
+
       const plaidClient = initPlaidClient(
         args.plaidClientId,
         args.plaidSecret,
         args.plaidEnv
       );
 
-      // Fetch all transaction pages
+      // Step 3: Fetch transaction pages (with limits to prevent memory explosion)
       const syncResult = await syncTransactionsPaginated(
         plaidClient,
         accessToken,
-        initialCursor
+        initialCursor ?? "",
+        {
+          maxPages: args.maxPages,
+          maxTransactions: args.maxTransactions,
+        }
       );
 
       console.log(
-        `[Plaid Component] Sync complete: ${syncResult.added.length} added, ` +
-          `${syncResult.modified.length} modified, ${syncResult.removed.length} removed`
+        `[Plaid Component] Sync fetched: ${syncResult.added.length} added, ` +
+          `${syncResult.modified.length} modified, ${syncResult.removed.length} removed ` +
+          `(pages: ${syncResult.pagesProcessed}, hasMore: ${syncResult.hasMore})`
       );
 
-      // Transform transactions
+      // Step 4: Transform and store transactions
       const addedData = syncResult.added.map((t) => transformTransaction(t));
       const modifiedData = syncResult.modified.map((t) => transformTransaction(t));
       const removedIds = syncResult.removed.map((t) => t.transaction_id);
 
-      // Bulk upsert transactions
       await ctx.runMutation(internal.private.bulkUpsertTransactions, {
         userId,
         plaidItemId: args.plaidItemId,
@@ -360,19 +384,34 @@ export const syncTransactions = action({
         removed: removedIds,
       });
 
-      // Update cursor and mark as active (CRITICAL: only after all pages stored)
-      await ctx.runMutation(internal.private.updateItemCursor, {
-        plaidItemId: args.plaidItemId,
-        cursor: syncResult.nextCursor,
-      });
+      // Step 5: Complete sync atomically (update cursor with version check)
+      const completeResult = await ctx.runMutation(
+        internal.private.completeSyncWithVersion,
+        {
+          plaidItemId: args.plaidItemId,
+          syncVersion,
+          cursor: syncResult.nextCursor,
+        }
+      );
 
-      console.log("[Plaid Component] Updated cursor and marked as active");
+      if (!completeResult.success) {
+        // Another sync took over while we were processing
+        console.warn(
+          `[Plaid Component] Sync complete failed: ${completeResult.reason}`
+        );
+        // Transactions were stored but cursor wasn't updated
+        // Next sync will re-process from old cursor (some duplicates but safe)
+      } else {
+        console.log("[Plaid Component] Sync completed successfully");
+      }
 
       return {
         added: syncResult.added.length,
         modified: syncResult.modified.length,
         removed: syncResult.removed.length,
         cursor: syncResult.nextCursor,
+        hasMore: syncResult.hasMore,
+        pagesProcessed: syncResult.pagesProcessed,
       };
     } catch (error: unknown) {
       const plaidError = categorizeError(error);
@@ -380,9 +419,10 @@ export const syncTransactions = action({
         `[Plaid Component] Sync error: ${formatErrorForLog(plaidError)}`
       );
 
-      // Update status based on error type
-      await ctx.runMutation(internal.private.updateItemStatus, {
+      // Release lock with error status
+      await ctx.runMutation(internal.private.releaseSyncLock, {
         plaidItemId: args.plaidItemId,
+        syncVersion,
         status: requiresReauth(plaidError) ? "needs_reauth" : "error",
         syncError: plaidError.message,
       });

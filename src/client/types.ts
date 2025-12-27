@@ -150,6 +150,24 @@ export interface SyncTransactionsResult {
   modified: number;
   removed: number;
   cursor: string;
+  /** True if more pages remain (caller should schedule another sync) */
+  hasMore: boolean;
+  /** Number of pages processed in this sync */
+  pagesProcessed: number;
+  /** True if sync was skipped due to lock conflict (another sync in progress) */
+  skipped?: boolean;
+  /** Reason for skipping if skipped=true */
+  skipReason?: string;
+}
+
+/**
+ * Options for syncTransactions pagination.
+ */
+export interface SyncTransactionsOptions {
+  /** Maximum number of pages to fetch (default: 10) */
+  maxPages?: number;
+  /** Maximum transactions to accumulate before stopping (default: 5000) */
+  maxTransactions?: number;
 }
 
 /**

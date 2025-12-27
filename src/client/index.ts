@@ -18,6 +18,7 @@ import type {
   ExchangePublicTokenResult,
   FetchAccountsResult,
   SyncTransactionsResult,
+  SyncTransactionsOptions,
   FetchLiabilitiesResult,
   OnboardItemResult,
   FetchRecurringStreamsResult,
@@ -50,6 +51,7 @@ export type {
   ExchangePublicTokenResult,
   FetchAccountsResult,
   SyncTransactionsResult,
+  SyncTransactionsOptions,
   FetchLiabilitiesResult,
   OnboardItemResult,
   FetchRecurringStreamsResult,
@@ -187,26 +189,34 @@ export class Plaid {
   }
 
   /**
-   * Sync transactions using cursor-based pagination.
+   * Sync transactions using cursor-based pagination with race condition protection.
    *
-   * Handles added, modified, and removed transactions.
-   * Updates cursor only after successful storage.
+   * Features:
+   * - Optimistic locking prevents concurrent syncs from causing duplicates
+   * - Pagination limits prevent memory explosion on large syncs
+   * - If hasMore=true, caller should schedule another sync
    *
    * @param plaidItemId - Convex document ID of the plaidItem (as string)
+   * @param options - Optional pagination limits (maxPages, maxTransactions)
    */
   async syncTransactions(
     ctx: ActionCtx,
     args: {
       plaidItemId: string;
-    }
+    } & SyncTransactionsOptions
   ): Promise<SyncTransactionsResult> {
-    return await ctx.runAction(this.component.actions.syncTransactions, {
+    // Cast to any since generated types may not include new args yet
+    const actions = this.component.actions as any;
+    const result = await ctx.runAction(actions.syncTransactions, {
       plaidItemId: args.plaidItemId,
+      maxPages: args.maxPages,
+      maxTransactions: args.maxTransactions,
       plaidClientId: this.config.PLAID_CLIENT_ID,
       plaidSecret: this.config.PLAID_SECRET,
       plaidEnv: this.config.PLAID_ENV,
       encryptionKey: this.config.ENCRYPTION_KEY,
     });
+    return result as SyncTransactionsResult;
   }
 
   /**

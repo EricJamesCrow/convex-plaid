@@ -111,35 +111,62 @@ export interface TransactionSyncResult {
   modified: Transaction[];
   removed: RemovedTransaction[];
   nextCursor: string;
+  hasMore: boolean; // True if more pages remain (hit page limit)
+  pagesProcessed: number;
 }
+
+/** Default pagination limits */
+export const SYNC_PAGINATION_DEFAULTS = {
+  maxPages: 10, // Maximum pages to fetch in one sync call
+  maxTransactions: 5000, // Maximum transactions to accumulate before stopping
+} as const;
 
 // =============================================================================
 // SYNC HELPERS
 // =============================================================================
 
+/** Options for transaction sync pagination */
+export interface SyncPaginationOptions {
+  maxPages?: number; // Maximum pages to fetch (default: 10)
+  maxTransactions?: number; // Maximum transactions before stopping (default: 5000)
+}
+
 /**
  * Sync transactions with cursor-based pagination.
  *
- * Fetches all pages of transaction updates from Plaid.
+ * Fetches pages of transaction updates from Plaid with configurable limits.
+ * Stops when:
+ * - No more pages available (has_more = false)
+ * - maxPages limit reached
+ * - maxTransactions limit reached
+ *
+ * When stopped due to limits, hasMore=true signals that more syncs are needed.
  * Pure function - no side effects (caller handles storage).
  *
  * @param plaidClient - Initialized Plaid client
  * @param accessToken - Decrypted access token
  * @param cursor - Starting cursor (empty string for initial sync)
- * @returns Accumulated transactions and final cursor
+ * @param options - Pagination limits
+ * @returns Accumulated transactions, cursor, and continuation status
  */
 export async function syncTransactionsPaginated(
   plaidClient: PlaidApi,
   accessToken: string,
-  cursor: string = ""
+  cursor: string = "",
+  options: SyncPaginationOptions = {}
 ): Promise<TransactionSyncResult> {
+  const maxPages = options.maxPages ?? SYNC_PAGINATION_DEFAULTS.maxPages;
+  const maxTransactions = options.maxTransactions ?? SYNC_PAGINATION_DEFAULTS.maxTransactions;
+
   let currentCursor = cursor;
   let added: Transaction[] = [];
   let modified: Transaction[] = [];
   let removed: RemovedTransaction[] = [];
+  let pagesProcessed = 0;
+  let hasMore = false;
 
-  // Pagination loop - fetch all pages
-  while (true) {
+  // Pagination loop with limits
+  while (pagesProcessed < maxPages) {
     const syncResponse = await plaidClient.transactionsSync({
       access_token: accessToken,
       cursor: currentCursor,
@@ -148,23 +175,55 @@ export async function syncTransactionsPaginated(
       },
     });
 
-    // Accumulate results
-    added = added.concat(syncResponse.data.added);
-    modified = modified.concat(syncResponse.data.modified);
-    removed = removed.concat(syncResponse.data.removed);
+    pagesProcessed++;
+
+    // Accumulate results using push (more memory-efficient than concat)
+    added.push(...syncResponse.data.added);
+    modified.push(...syncResponse.data.modified);
+    removed.push(...syncResponse.data.removed);
 
     // Update cursor for next iteration
     currentCursor = syncResponse.data.next_cursor;
 
+    const totalTransactions = added.length + modified.length;
+
     console.log(
-      `[Plaid Component] Fetched: ${syncResponse.data.added.length} added, ` +
+      `[Plaid Component] Page ${pagesProcessed}/${maxPages}: ` +
+        `${syncResponse.data.added.length} added, ` +
         `${syncResponse.data.modified.length} modified, ` +
         `${syncResponse.data.removed.length} removed ` +
-        `(has_more: ${syncResponse.data.has_more})`
+        `(total: ${totalTransactions}, has_more: ${syncResponse.data.has_more})`
     );
 
-    // Exit when no more pages
-    if (!syncResponse.data.has_more) break;
+    // Check if we should stop
+    if (!syncResponse.data.has_more) {
+      // Plaid says no more data
+      hasMore = false;
+      break;
+    }
+
+    // Check transaction limit
+    if (totalTransactions >= maxTransactions) {
+      console.log(
+        `[Plaid Component] Reached transaction limit (${totalTransactions}/${maxTransactions}), ` +
+          `will continue in next sync`
+      );
+      hasMore = true;
+      break;
+    }
+
+    // Check page limit (loop condition will catch this too)
+    if (pagesProcessed >= maxPages) {
+      console.log(
+        `[Plaid Component] Reached page limit (${pagesProcessed}/${maxPages}), ` +
+          `will continue in next sync`
+      );
+      hasMore = true;
+      break;
+    }
+
+    // If there are more pages, continue
+    hasMore = syncResponse.data.has_more;
   }
 
   return {
@@ -172,6 +231,8 @@ export async function syncTransactionsPaginated(
     modified,
     removed,
     nextCursor: currentCursor,
+    hasMore,
+    pagesProcessed,
   };
 }
 

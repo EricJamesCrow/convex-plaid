@@ -37,6 +37,10 @@ export default defineSchema({
     createdAt: v.number(), // Unix timestamp
     lastSyncedAt: v.optional(v.number()), // Last successful sync timestamp
 
+    // Optimistic locking for transaction sync (prevents race conditions)
+    syncVersion: v.optional(v.number()), // Incremented on each sync start
+    syncStartedAt: v.optional(v.number()), // When current sync started (for timeout detection)
+
     // Circuit breaker state (for resilience)
     circuitState: v.optional(
       v.union(v.literal("closed"), v.literal("open"), v.literal("half_open"))

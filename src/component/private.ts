@@ -9,6 +9,25 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server.js";
+import type { QueryCtx, MutationCtx } from "./_generated/server.js";
+
+// =============================================================================
+// HELPER: Efficient ID Lookup
+// =============================================================================
+
+/**
+ * Helper to get a plaidItem by its string ID efficiently using O(1) lookup.
+ * Uses ctx.db.normalizeId() + ctx.db.get() instead of full table scan.
+ */
+async function getPlaidItemById(
+  ctx: QueryCtx | MutationCtx,
+  plaidItemId: string
+) {
+  // normalizeId converts string to proper Id type, returns null if invalid
+  const id = ctx.db.normalizeId("plaidItems", plaidItemId);
+  if (!id) return null;
+  return await ctx.db.get(id);
+}
 
 // =============================================================================
 // VALIDATORS (Reusable)
@@ -83,6 +102,7 @@ const recurringStreamValidator = v.object({
 /**
  * Get a plaidItem by its Convex document ID.
  * Returns the item with its encrypted access token.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
  */
 export const getPlaidItem = internalQuery({
   args: { plaidItemId: v.string() },
@@ -99,18 +119,14 @@ export const getPlaidItem = internalQuery({
       syncError: v.optional(v.string()),
       createdAt: v.number(),
       lastSyncedAt: v.optional(v.number()),
+      syncVersion: v.optional(v.number()),
+      syncStartedAt: v.optional(v.number()),
     }),
     v.null()
   ),
   handler: async (ctx, args) => {
-    // Query by document ID
-    const items = await ctx.db
-      .query("plaidItems")
-      .collect();
-
-    // Find matching item by string ID comparison
-    const item = items.find((i) => String(i._id) === args.plaidItemId);
-
+    // O(1) lookup using normalizeId + get
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
     if (!item) return null;
 
     return {
@@ -125,6 +141,8 @@ export const getPlaidItem = internalQuery({
       syncError: item.syncError,
       createdAt: item.createdAt,
       lastSyncedAt: item.lastSyncedAt,
+      syncVersion: item.syncVersion,
+      syncStartedAt: item.syncStartedAt,
     };
   },
 });
@@ -178,6 +196,7 @@ export const createPlaidItem = internalMutation({
 
 /**
  * Update plaidItem status.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
  */
 export const updateItemStatus = internalMutation({
   args: {
@@ -187,9 +206,8 @@ export const updateItemStatus = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    // Find item by string ID
-    const items = await ctx.db.query("plaidItems").collect();
-    const item = items.find((i) => String(i._id) === args.plaidItemId);
+    // O(1) lookup using normalizeId + get
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
 
     if (item) {
       await ctx.db.patch(item._id, {
@@ -205,6 +223,7 @@ export const updateItemStatus = internalMutation({
 /**
  * Update plaidItem cursor after successful sync.
  * Also marks as 'active' and updates lastSyncedAt.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
  */
 export const updateItemCursor = internalMutation({
   args: {
@@ -213,14 +232,178 @@ export const updateItemCursor = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const items = await ctx.db.query("plaidItems").collect();
-    const item = items.find((i) => String(i._id) === args.plaidItemId);
+    // O(1) lookup using normalizeId + get
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
 
     if (item) {
       await ctx.db.patch(item._id, {
         cursor: args.cursor,
         status: "active",
         lastSyncedAt: Date.now(),
+      });
+    }
+
+    return null;
+  },
+});
+
+// =============================================================================
+// SYNC LOCKING - Prevent Race Conditions (Critical Fix)
+// =============================================================================
+
+/** Timeout for considering a sync "stuck" (5 minutes) */
+const SYNC_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Acquire a sync lock using optimistic locking.
+ * Returns the new syncVersion if lock acquired, or null if another sync is in progress.
+ *
+ * This prevents race conditions where two concurrent syncs could:
+ * - Both read the same cursor
+ * - Both fetch duplicate transactions
+ * - Race to update cursor state
+ *
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
+ */
+export const acquireSyncLock = internalMutation({
+  args: {
+    plaidItemId: v.string(),
+    expectedVersion: v.optional(v.number()), // Version we expect (for optimistic locking)
+  },
+  returns: v.union(
+    v.object({
+      acquired: v.literal(true),
+      syncVersion: v.number(),
+      cursor: v.optional(v.string()),
+      accessToken: v.string(),
+      userId: v.string(),
+    }),
+    v.object({
+      acquired: v.literal(false),
+      reason: v.string(),
+      currentVersion: v.optional(v.number()),
+      syncStartedAt: v.optional(v.number()),
+    })
+  ),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) {
+      return { acquired: false as const, reason: "Item not found" };
+    }
+
+    const now = Date.now();
+    const currentVersion = item.syncVersion ?? 0;
+
+    // Check if there's an active sync (that hasn't timed out)
+    if (item.status === "syncing" && item.syncStartedAt) {
+      const syncAge = now - item.syncStartedAt;
+      if (syncAge < SYNC_TIMEOUT_MS) {
+        return {
+          acquired: false as const,
+          reason: "Sync already in progress",
+          currentVersion,
+          syncStartedAt: item.syncStartedAt,
+        };
+      }
+      // Sync has timed out, we can take over
+      console.warn(
+        `[Plaid Component] Sync timeout detected for ${args.plaidItemId}, taking over`
+      );
+    }
+
+    // If expectedVersion provided, verify it matches (optimistic lock check)
+    if (args.expectedVersion !== undefined && args.expectedVersion !== currentVersion) {
+      return {
+        acquired: false as const,
+        reason: "Version mismatch (concurrent modification)",
+        currentVersion,
+        syncStartedAt: item.syncStartedAt,
+      };
+    }
+
+    // Acquire the lock by incrementing version and setting status
+    const newVersion = currentVersion + 1;
+    await ctx.db.patch(item._id, {
+      status: "syncing",
+      syncVersion: newVersion,
+      syncStartedAt: now,
+      syncError: undefined, // Clear previous error
+    });
+
+    return {
+      acquired: true as const,
+      syncVersion: newVersion,
+      cursor: item.cursor,
+      accessToken: item.accessToken,
+      userId: item.userId,
+    };
+  },
+});
+
+/**
+ * Complete a sync atomically: update cursor AND store the version we synced with.
+ * Fails if another sync has taken over (version mismatch).
+ *
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
+ */
+export const completeSyncWithVersion = internalMutation({
+  args: {
+    plaidItemId: v.string(),
+    syncVersion: v.number(), // Version we acquired
+    cursor: v.string(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+    reason: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) {
+      return { success: false, reason: "Item not found" };
+    }
+
+    // Verify we still hold the lock (version matches)
+    if (item.syncVersion !== args.syncVersion) {
+      return {
+        success: false,
+        reason: `Version mismatch: expected ${args.syncVersion}, got ${item.syncVersion}`,
+      };
+    }
+
+    // Complete the sync
+    await ctx.db.patch(item._id, {
+      cursor: args.cursor,
+      status: "active",
+      lastSyncedAt: Date.now(),
+      syncStartedAt: undefined, // Clear sync start time
+    });
+
+    return { success: true };
+  },
+});
+
+/**
+ * Release sync lock on error without updating cursor.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
+ */
+export const releaseSyncLock = internalMutation({
+  args: {
+    plaidItemId: v.string(),
+    syncVersion: v.number(),
+    status: v.string(),
+    syncError: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+
+    // Only release if we still hold the lock
+    if (item.syncVersion === args.syncVersion) {
+      await ctx.db.patch(item._id, {
+        status: args.status as any,
+        syncError: args.syncError,
+        syncStartedAt: undefined,
       });
     }
 
@@ -290,6 +473,7 @@ export const setItemError = internalMutation({
 /**
  * Get plaidItem with circuit breaker fields.
  * Used by circuit breaker module.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
  */
 export const getPlaidItemWithCircuit = internalQuery({
   args: { plaidItemId: v.string() },
@@ -305,9 +489,8 @@ export const getPlaidItemWithCircuit = internalQuery({
     v.null()
   ),
   handler: async (ctx, args) => {
-    const items = await ctx.db.query("plaidItems").collect();
-    const item = items.find((i) => String(i._id) === args.plaidItemId);
-
+    // O(1) lookup using normalizeId + get
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
     if (!item) return null;
 
     return {
@@ -323,6 +506,7 @@ export const getPlaidItemWithCircuit = internalQuery({
 
 /**
  * Update circuit breaker state for a plaidItem.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
  */
 export const updateCircuitState = internalMutation({
   args: {
@@ -337,9 +521,8 @@ export const updateCircuitState = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const items = await ctx.db.query("plaidItems").collect();
-    const item = items.find((i) => String(i._id) === args.plaidItemId);
-
+    // O(1) lookup using normalizeId + get
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
     if (!item) return null;
 
     const updates: Record<string, unknown> = {};
@@ -360,14 +543,14 @@ export const updateCircuitState = internalMutation({
 
 /**
  * Reset circuit breaker to closed state.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
  */
 export const resetCircuitBreaker = internalMutation({
   args: { plaidItemId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const items = await ctx.db.query("plaidItems").collect();
-    const item = items.find((i) => String(i._id) === args.plaidItemId);
-
+    // O(1) lookup using normalizeId + get
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
     if (!item) return null;
 
     await ctx.db.patch(item._id, {
@@ -1115,6 +1298,7 @@ export const createWebhookLog = internalMutation({
 
 /**
  * Update webhook log status.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
  */
 export const updateWebhookLogStatus = internalMutation({
   args: {
@@ -1132,9 +1316,10 @@ export const updateWebhookLogStatus = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const logs = await ctx.db.query("webhookLogs").collect();
-    const log = logs.find((l) => String(l._id) === args.webhookLogId);
-
+    // O(1) lookup using normalizeId + get
+    const id = ctx.db.normalizeId("webhookLogs", args.webhookLogId);
+    if (!id) return null;
+    const log = await ctx.db.get(id);
     if (!log) return null;
 
     await ctx.db.patch(log._id, {
