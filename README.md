@@ -1,8 +1,8 @@
-# @smartpockets/convex-plaid
+# @ericjamescrow/convex-plaid
 
 A Convex component for integrating Plaid into your application - bank connections, transactions, liabilities, and recurring payments.
 
-[![npm version](https://badge.fury.io/js/@smartpockets%2Fconvex-plaid.svg)](https://badge.fury.io/js/@smartpockets%2Fconvex-plaid)
+[![npm version](https://badge.fury.io/js/@ericjamescrow%2Fconvex-plaid.svg)](https://badge.fury.io/js/@ericjamescrow%2Fconvex-plaid)
 
 ## Features
 
@@ -21,7 +21,7 @@ A Convex component for integrating Plaid into your application - bank connection
 ### 1. Install the Component
 
 ```bash
-npm install @smartpockets/convex-plaid
+npm install @ericjamescrow/convex-plaid
 ```
 
 ### 2. Register the Component
@@ -30,7 +30,7 @@ Create or update `convex/convex.config.ts`:
 
 ```typescript
 import { defineApp } from "convex/server";
-import plaid from "@smartpockets/convex-plaid/convex.config";
+import plaid from "@ericjamescrow/convex-plaid/convex.config";
 
 const app = defineApp();
 app.use(plaid);
@@ -64,7 +64,7 @@ Create `convex/plaid.ts`:
 ```typescript
 import { action, query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { Plaid } from "@smartpockets/convex-plaid";
+import { Plaid } from "@ericjamescrow/convex-plaid";
 import { components } from "./_generated/api";
 
 const plaid = new Plaid(components.plaid, {
@@ -134,7 +134,7 @@ export const getTransactionsByUser = query({
 ### 6. Use React Hooks
 
 ```tsx
-import { usePlaidLink } from "@smartpockets/convex-plaid/react";
+import { usePlaidLink } from "@ericjamescrow/convex-plaid/react";
 import { api } from "../convex/_generated/api";
 import { useAction } from "convex/react";
 
@@ -164,7 +164,7 @@ function ConnectBank({ userId }: { userId: string }) {
 ### Plaid Client
 
 ```typescript
-import { Plaid } from "@smartpockets/convex-plaid";
+import { Plaid } from "@ericjamescrow/convex-plaid";
 
 const plaid = new Plaid(components.plaid, {
   PLAID_CLIENT_ID: string,
@@ -256,7 +256,7 @@ Create `convex/http.ts`:
 
 ```typescript
 import { httpRouter } from "convex/server";
-import { registerRoutes } from "@smartpockets/convex-plaid";
+import { registerRoutes } from "@ericjamescrow/convex-plaid";
 import { components } from "./_generated/api";
 
 const http = httpRouter();
@@ -440,7 +440,7 @@ Your App
 └── src/
     └── components/         # React components using hooks
 
-Component (node_modules/@smartpockets/convex-plaid)
+Component (node_modules/@ericjamescrow/convex-plaid)
 ├── src/component/          # Internal tables and actions
 ├── src/client/             # Plaid class for host app
 └── src/react/              # React hooks

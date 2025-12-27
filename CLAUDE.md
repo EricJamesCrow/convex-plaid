@@ -1,4 +1,4 @@
-# @smartpockets/convex-plaid
+# @ericjamescrow/convex-plaid
 
 A Plaid component for Convex that provides bank account connections, transaction syncing, credit card liabilities, and recurring stream detection.
 
@@ -25,7 +25,7 @@ Host App (your convex/ folder)
 ├── http.ts               # Webhook route registration
 └── _generated/api.js     # Includes components.plaid
 
-Component (node_modules/@smartpockets/convex-plaid)
+Component (node_modules/@ericjamescrow/convex-plaid)
 ├── src/component/        # Internal tables, actions, queries
 ├── src/client/           # Plaid class for host app integration
 └── src/react/            # usePlaidLink React hook
@@ -41,7 +41,7 @@ Component (node_modules/@smartpockets/convex-plaid)
 ## Installation
 
 ```bash
-npm install @smartpockets/convex-plaid
+npm install @ericjamescrow/convex-plaid
 ```
 
 ## Setup
@@ -51,7 +51,7 @@ npm install @smartpockets/convex-plaid
 ```typescript
 // convex/convex.config.ts
 import { defineApp } from "convex/server";
-import plaid from "@smartpockets/convex-plaid/convex.config";
+import plaid from "@ericjamescrow/convex-plaid/convex.config";
 
 const app = defineApp();
 app.use(plaid);
@@ -90,7 +90,7 @@ The component requires explicit config since it can't access `process.env`:
 // convex/plaid.ts
 import { action, query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { Plaid } from "@smartpockets/convex-plaid";
+import { Plaid } from "@ericjamescrow/convex-plaid";
 import { components } from "./_generated/api";
 
 // Initialize client with config
@@ -240,7 +240,7 @@ export const deletePlaidItem = mutation({
 ### `Plaid` Class
 
 ```typescript
-import { Plaid } from "@smartpockets/convex-plaid";
+import { Plaid } from "@ericjamescrow/convex-plaid";
 
 const plaid = new Plaid(components.plaid, {
   PLAID_CLIENT_ID: string,
@@ -298,7 +298,7 @@ Access via `plaid.api.*` in query/mutation handlers:
 ## React Hooks
 
 ```typescript
-import { usePlaidLink, useUpdatePlaidLink } from "@smartpockets/convex-plaid/react";
+import { usePlaidLink, useUpdatePlaidLink } from "@ericjamescrow/convex-plaid/react";
 ```
 
 ### `usePlaidLink`
@@ -306,7 +306,7 @@ import { usePlaidLink, useUpdatePlaidLink } from "@smartpockets/convex-plaid/rea
 Main hook for connecting new bank accounts:
 
 ```tsx
-import { usePlaidLink } from "@smartpockets/convex-plaid/react";
+import { usePlaidLink } from "@ericjamescrow/convex-plaid/react";
 import { api } from "../convex/_generated/api";
 
 function ConnectBank({ userId }: { userId: string }) {
@@ -336,7 +336,7 @@ function ConnectBank({ userId }: { userId: string }) {
 Hook for re-authenticating when credentials expire:
 
 ```tsx
-import { useUpdatePlaidLink } from "@smartpockets/convex-plaid/react";
+import { useUpdatePlaidLink } from "@ericjamescrow/convex-plaid/react";
 
 function ReauthBank({ plaidItemId }: { plaidItemId: string }) {
   const { open, ready, refreshToken } = useUpdatePlaidLink({
@@ -391,7 +391,7 @@ interface UsePlaidLinkResult {
 ```typescript
 // convex/http.ts
 import { httpRouter } from "convex/server";
-import { registerRoutes } from "@smartpockets/convex-plaid";
+import { registerRoutes } from "@ericjamescrow/convex-plaid";
 import { components } from "./_generated/api";
 
 const http = httpRouter();

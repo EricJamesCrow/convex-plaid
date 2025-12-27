@@ -5,7 +5,7 @@
  */
 
 import { httpRouter } from "convex/server";
-import { registerRoutes } from "@smartpockets/convex-plaid";
+import { registerRoutes } from "@ericjamescrow/convex-plaid";
 import { components } from "./_generated/api";
 
 const http = httpRouter();

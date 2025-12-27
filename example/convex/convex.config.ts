@@ -5,7 +5,7 @@
  */
 
 import { defineApp } from "convex/server";
-import plaid from "@smartpockets/convex-plaid/convex.config.js";
+import plaid from "@ericjamescrow/convex-plaid/convex.config.js";
 
 const app = defineApp();
 

@@ -6,7 +6,7 @@
  *
  * @example
  * ```tsx
- * import { usePlaidLink } from "@smartpockets/convex-plaid/react";
+ * import { usePlaidLink } from "@ericjamescrow/convex-plaid/react";
  * import { api } from "../convex/_generated/api";
  *
  * function ConnectBank() {

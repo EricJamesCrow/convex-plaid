@@ -73,7 +73,7 @@ export type {
  * @example
  * ```typescript
  * // In your convex/plaid.ts
- * import { Plaid } from "@smartpockets/convex-plaid";
+ * import { Plaid } from "@ericjamescrow/convex-plaid";
  * import { components } from "./_generated/api";
  *
  * const plaid = new Plaid(components.plaid, {
@@ -448,7 +448,7 @@ export class Plaid {
  * ```typescript
  * // convex/http.ts
  * import { httpRouter } from "convex/server";
- * import { registerRoutes } from "@smartpockets/convex-plaid";
+ * import { registerRoutes } from "@ericjamescrow/convex-plaid";
  * import { components } from "./_generated/api";
  *
  * const http = httpRouter();

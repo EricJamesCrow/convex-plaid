@@ -9,7 +9,7 @@
 
 import { v } from "convex/values";
 import { action, query } from "./_generated/server";
-import { Plaid } from "@smartpockets/convex-plaid";
+import { Plaid } from "@ericjamescrow/convex-plaid";
 import { components } from "./_generated/api";
 
 // =============================================================================
