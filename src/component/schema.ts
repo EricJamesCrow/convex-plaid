@@ -419,4 +419,75 @@ export default defineSchema({
     .index("by_received_at", ["receivedAt"])
     .index("by_item", ["itemId"])
     .index("by_status", ["status"]),
+
+  /**
+   * Sync Logs - Audit trail for sync operations
+   *
+   * Tracks every sync operation for debugging and monitoring.
+   * Use getSyncLogsByItem, getSyncStats queries to analyze sync health.
+   * Run pruneOldSyncLogs periodically (e.g., daily cron) to prevent table growth.
+   */
+  syncLogs: defineTable({
+    plaidItemId: v.string(), // Reference to plaidItem
+    userId: v.string(), // Host app user ID
+    syncType: v.union(
+      v.literal("transactions"),
+      v.literal("liabilities"),
+      v.literal("recurring"),
+      v.literal("accounts"),
+      v.literal("onboard")
+    ),
+    trigger: v.union(
+      v.literal("webhook"),
+      v.literal("scheduled"),
+      v.literal("manual"),
+      v.literal("onboard")
+    ),
+    startedAt: v.number(), // Unix timestamp when sync started
+    completedAt: v.optional(v.number()), // Unix timestamp when sync completed
+    durationMs: v.optional(v.number()), // Duration in milliseconds
+    status: v.union(
+      v.literal("started"),
+      v.literal("success"),
+      v.literal("error"),
+      v.literal("rate_limited"),
+      v.literal("circuit_open")
+    ),
+    result: v.optional(
+      v.object({
+        transactionsAdded: v.optional(v.number()),
+        transactionsModified: v.optional(v.number()),
+        transactionsRemoved: v.optional(v.number()),
+        accountsUpdated: v.optional(v.number()),
+        streamsUpdated: v.optional(v.number()),
+        creditCardsUpdated: v.optional(v.number()),
+        mortgagesUpdated: v.optional(v.number()),
+        studentLoansUpdated: v.optional(v.number()),
+      })
+    ),
+    errorCode: v.optional(v.string()), // Plaid error code if applicable
+    errorMessage: v.optional(v.string()), // Error message
+    retryCount: v.optional(v.number()), // Number of retries attempted
+  })
+    .index("by_plaid_item", ["plaidItemId"])
+    .index("by_user", ["userId"])
+    .index("by_status", ["status"])
+    .index("by_started_at", ["startedAt"])
+    .index("by_trigger", ["trigger"]),
+
+  /**
+   * Plaid Institutions - Cached institution metadata
+   *
+   * Shared cache of bank logos and branding - same Chase logo not duplicated per user.
+   * Auto-populated during exchangePublicToken, refreshed if stale (> 24 hours).
+   */
+  plaidInstitutions: defineTable({
+    institutionId: v.string(), // Plaid institution_id (unique)
+    name: v.string(), // "Chase", "Wells Fargo"
+    logo: v.optional(v.string()), // Base64 encoded PNG
+    primaryColor: v.optional(v.string()), // Hex color "#0074C8"
+    url: v.optional(v.string()), // "https://www.chase.com"
+    products: v.optional(v.array(v.string())), // ["transactions", "liabilities"]
+    lastFetched: v.number(), // Timestamp for cache invalidation
+  }).index("by_institution_id", ["institutionId"]),
 });

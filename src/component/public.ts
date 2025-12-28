@@ -904,3 +904,223 @@ export const getSubscriptionsSummary = query({
     };
   },
 });
+
+// =============================================================================
+// SYNC LOGS QUERIES
+// =============================================================================
+
+const syncResultValidator = v.optional(
+  v.object({
+    transactionsAdded: v.optional(v.number()),
+    transactionsModified: v.optional(v.number()),
+    transactionsRemoved: v.optional(v.number()),
+    accountsUpdated: v.optional(v.number()),
+    streamsUpdated: v.optional(v.number()),
+    creditCardsUpdated: v.optional(v.number()),
+    mortgagesUpdated: v.optional(v.number()),
+    studentLoansUpdated: v.optional(v.number()),
+  })
+);
+
+const syncLogReturnValidator = v.object({
+  _id: v.string(),
+  plaidItemId: v.string(),
+  userId: v.string(),
+  syncType: v.string(),
+  trigger: v.string(),
+  startedAt: v.number(),
+  completedAt: v.optional(v.number()),
+  durationMs: v.optional(v.number()),
+  status: v.string(),
+  result: syncResultValidator,
+  errorCode: v.optional(v.string()),
+  errorMessage: v.optional(v.string()),
+  retryCount: v.optional(v.number()),
+});
+
+/**
+ * Get sync logs for a specific plaidItem.
+ * Returns most recent first.
+ */
+export const getSyncLogsByItem = query({
+  args: {
+    plaidItemId: v.string(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(syncLogReturnValidator),
+  handler: async (ctx, args) => {
+    let queryBuilder = ctx.db
+      .query("syncLogs")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .order("desc");
+
+    const logs = args.limit
+      ? await queryBuilder.take(args.limit)
+      : await queryBuilder.collect();
+
+    return logs.map((log) => ({
+      ...log,
+      _id: String(log._id),
+    }));
+  },
+});
+
+/**
+ * Get sync logs for a user.
+ * Returns most recent first.
+ */
+export const getSyncLogsByUser = query({
+  args: {
+    userId: v.string(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(syncLogReturnValidator),
+  handler: async (ctx, args) => {
+    let queryBuilder = ctx.db
+      .query("syncLogs")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .order("desc");
+
+    const logs = args.limit
+      ? await queryBuilder.take(args.limit)
+      : await queryBuilder.collect();
+
+    return logs.map((log) => ({
+      ...log,
+      _id: String(log._id),
+    }));
+  },
+});
+
+/**
+ * Get sync statistics for a plaidItem.
+ * Useful for monitoring sync health.
+ */
+export const getSyncStats = query({
+  args: {
+    plaidItemId: v.string(),
+    daysBack: v.optional(v.number()), // Default: 7 days
+  },
+  returns: v.object({
+    totalSyncs: v.number(),
+    successCount: v.number(),
+    errorCount: v.number(),
+    successRate: v.number(), // 0-100 percentage
+    averageDurationMs: v.optional(v.number()),
+    lastSyncAt: v.optional(v.number()),
+    lastSuccessAt: v.optional(v.number()),
+    lastErrorAt: v.optional(v.number()),
+    lastErrorMessage: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const daysBack = args.daysBack ?? 7;
+    const cutoff = Date.now() - daysBack * 24 * 60 * 60 * 1000;
+
+    const logs = await ctx.db
+      .query("syncLogs")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .collect();
+
+    // Filter to recent logs
+    const recentLogs = logs.filter((log) => log.startedAt >= cutoff);
+
+    const successLogs = recentLogs.filter((log) => log.status === "success");
+    const errorLogs = recentLogs.filter(
+      (log) =>
+        log.status === "error" ||
+        log.status === "rate_limited" ||
+        log.status === "circuit_open"
+    );
+
+    // Calculate average duration for completed syncs
+    const completedLogs = recentLogs.filter((log) => log.durationMs != null);
+    const averageDurationMs =
+      completedLogs.length > 0
+        ? Math.round(
+            completedLogs.reduce((sum, log) => sum + (log.durationMs ?? 0), 0) /
+              completedLogs.length
+          )
+        : undefined;
+
+    // Find last sync times
+    const sortedByStart = [...recentLogs].sort(
+      (a, b) => b.startedAt - a.startedAt
+    );
+    const lastSync = sortedByStart[0];
+    const lastSuccess = successLogs.sort(
+      (a, b) => b.startedAt - a.startedAt
+    )[0];
+    const lastError = errorLogs.sort((a, b) => b.startedAt - a.startedAt)[0];
+
+    return {
+      totalSyncs: recentLogs.length,
+      successCount: successLogs.length,
+      errorCount: errorLogs.length,
+      successRate:
+        recentLogs.length > 0
+          ? Math.round((successLogs.length / recentLogs.length) * 100)
+          : 100,
+      averageDurationMs,
+      lastSyncAt: lastSync?.startedAt,
+      lastSuccessAt: lastSuccess?.startedAt,
+      lastErrorAt: lastError?.startedAt,
+      lastErrorMessage: lastError?.errorMessage,
+    };
+  },
+});
+
+// =============================================================================
+// INSTITUTION QUERIES
+// =============================================================================
+
+const institutionReturnValidator = v.object({
+  _id: v.string(),
+  institutionId: v.string(),
+  name: v.string(),
+  logo: v.optional(v.string()),
+  primaryColor: v.optional(v.string()),
+  url: v.optional(v.string()),
+  products: v.optional(v.array(v.string())),
+  lastFetched: v.number(),
+});
+
+/**
+ * Get institution metadata by institutionId.
+ * Returns cached institution data including logo and branding.
+ */
+export const getInstitution = query({
+  args: { institutionId: v.string() },
+  returns: v.union(institutionReturnValidator, v.null()),
+  handler: async (ctx, args) => {
+    const institution = await ctx.db
+      .query("plaidInstitutions")
+      .withIndex("by_institution_id", (q) =>
+        q.eq("institutionId", args.institutionId)
+      )
+      .first();
+
+    if (!institution) return null;
+
+    return {
+      ...institution,
+      _id: String(institution._id),
+    };
+  },
+});
+
+/**
+ * Get all cached institutions.
+ * Useful for displaying a list of known institutions.
+ */
+export const getAllInstitutions = query({
+  args: {},
+  returns: v.array(institutionReturnValidator),
+  handler: async (ctx) => {
+    const institutions = await ctx.db.query("plaidInstitutions").collect();
+
+    return institutions.map((inst) => ({
+      ...inst,
+      _id: String(inst._id),
+    }));
+  },
+});

@@ -144,18 +144,33 @@ export const exchangePublicToken = action({
 
     const institutionId = itemResponse.data.item.institution_id ?? undefined;
 
-    // Fetch institution name if available
+    // Fetch institution details and cache metadata (logo, branding)
     let institutionName: string | undefined;
     if (institutionId) {
       try {
         const instResponse = await plaidClient.institutionsGetById({
           institution_id: institutionId,
           country_codes: ["US"] as any[],
+          options: {
+            include_optional_metadata: true,
+          },
         });
-        institutionName = instResponse.data.institution.name;
+        const institution = instResponse.data.institution;
+        institutionName = institution.name;
         console.log("[Plaid Component] Institution:", institutionName);
+
+        // Cache institution metadata (shared across users for efficiency)
+        await ctx.runMutation(internal.private.upsertInstitution, {
+          institutionId,
+          name: institution.name,
+          logo: institution.logo ?? undefined,
+          primaryColor: institution.primary_color ?? undefined,
+          url: institution.url ?? undefined,
+          products: institution.products ?? undefined,
+        });
+        console.log("[Plaid Component] Institution metadata cached");
       } catch (e) {
-        console.warn("[Plaid Component] Failed to fetch institution name:", e);
+        console.warn("[Plaid Component] Failed to fetch institution details:", e);
       }
     }
 
@@ -217,57 +232,89 @@ export const fetchAccounts = action({
     // Decrypt access token
     const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
 
-    console.log("[Plaid Component] Fetching accounts...");
-
-    const plaidClient = initPlaidClient(
-      args.plaidClientId,
-      args.plaidSecret,
-      args.plaidEnv
-    );
-
-    const accountsResponse = await plaidClient.accountsGet({
-      access_token: accessToken,
+    // Create sync log entry
+    const syncLogId = await ctx.runMutation(internal.private.createSyncLog, {
+      plaidItemId: args.plaidItemId,
+      userId: item.userId,
+      syncType: "accounts",
+      trigger: "manual",
     });
 
-    // Transform accounts
-    const accounts = accountsResponse.data.accounts.map((account) => ({
-      accountId: account.account_id,
-      name: account.name,
-      officialName: account.official_name ?? undefined,
-      mask: account.mask ?? undefined,
-      type: account.type,
-      subtype: account.subtype ?? undefined,
-      balances: {
-        current:
-          account.balances.current !== null
-            ? convertAmountToMilliunits(account.balances.current)
-            : undefined,
-        available:
-          account.balances.available !== null
-            ? convertAmountToMilliunits(account.balances.available)
-            : undefined,
-        limit:
-          account.balances.limit !== null
-            ? convertAmountToMilliunits(account.balances.limit)
-            : undefined,
-        isoCurrencyCode: account.balances.iso_currency_code ?? "USD",
-      },
-    }));
+    console.log("[Plaid Component] Fetching accounts...");
 
-    // Bulk upsert accounts
-    if (accounts.length > 0) {
-      await ctx.runMutation(internal.private.bulkUpsertAccounts, {
-        userId: item.userId,
-        plaidItemId: args.plaidItemId,
-        accounts,
+    try {
+      const plaidClient = initPlaidClient(
+        args.plaidClientId,
+        args.plaidSecret,
+        args.plaidEnv
+      );
+
+      const accountsResponse = await plaidClient.accountsGet({
+        access_token: accessToken,
       });
 
-      console.log(`[Plaid Component] Stored ${accounts.length} accounts`);
-    }
+      // Transform accounts
+      const accounts = accountsResponse.data.accounts.map((account) => ({
+        accountId: account.account_id,
+        name: account.name,
+        officialName: account.official_name ?? undefined,
+        mask: account.mask ?? undefined,
+        type: account.type,
+        subtype: account.subtype ?? undefined,
+        balances: {
+          current:
+            account.balances.current !== null
+              ? convertAmountToMilliunits(account.balances.current)
+              : undefined,
+          available:
+            account.balances.available !== null
+              ? convertAmountToMilliunits(account.balances.available)
+              : undefined,
+          limit:
+            account.balances.limit !== null
+              ? convertAmountToMilliunits(account.balances.limit)
+              : undefined,
+          isoCurrencyCode: account.balances.iso_currency_code ?? "USD",
+        },
+      }));
 
-    return {
-      accountCount: accounts.length,
-    };
+      // Bulk upsert accounts
+      if (accounts.length > 0) {
+        await ctx.runMutation(internal.private.bulkUpsertAccounts, {
+          userId: item.userId,
+          plaidItemId: args.plaidItemId,
+          accounts,
+        });
+
+        console.log(`[Plaid Component] Stored ${accounts.length} accounts`);
+      }
+
+      // Complete sync log with success
+      await ctx.runMutation(internal.private.completeSyncLogSuccess, {
+        syncLogId,
+        result: {
+          accountsUpdated: accounts.length,
+        },
+      });
+
+      return {
+        accountCount: accounts.length,
+      };
+    } catch (error: unknown) {
+      const plaidError = categorizeError(error);
+      console.error(
+        `[Plaid Component] Accounts error: ${formatErrorForLog(plaidError)}`
+      );
+
+      // Complete sync log with error
+      await ctx.runMutation(internal.private.completeSyncLogError, {
+        syncLogId,
+        errorCode: plaidError.code,
+        errorMessage: plaidError.message,
+      });
+
+      throw error;
+    }
   },
 });
 
@@ -344,6 +391,14 @@ export const syncTransactions = action({
       `[Plaid Component] Lock acquired (version ${syncVersion}), cursor: ${initialCursor?.substring(0, 20) || "empty"}...`
     );
 
+    // Create sync log entry
+    const syncLogId = await ctx.runMutation(internal.private.createSyncLog, {
+      plaidItemId: args.plaidItemId,
+      userId,
+      syncType: "transactions",
+      trigger: "manual", // Could be passed as arg in future
+    });
+
     try {
       // Step 2: Decrypt access token
       const accessToken = await decryptToken(encryptedToken, args.encryptionKey);
@@ -405,6 +460,16 @@ export const syncTransactions = action({
         console.log("[Plaid Component] Sync completed successfully");
       }
 
+      // Complete sync log with success
+      await ctx.runMutation(internal.private.completeSyncLogSuccess, {
+        syncLogId,
+        result: {
+          transactionsAdded: syncResult.added.length,
+          transactionsModified: syncResult.modified.length,
+          transactionsRemoved: syncResult.removed.length,
+        },
+      });
+
       return {
         added: syncResult.added.length,
         modified: syncResult.modified.length,
@@ -418,6 +483,13 @@ export const syncTransactions = action({
       console.error(
         `[Plaid Component] Sync error: ${formatErrorForLog(plaidError)}`
       );
+
+      // Complete sync log with error
+      await ctx.runMutation(internal.private.completeSyncLogError, {
+        syncLogId,
+        errorCode: plaidError.code,
+        errorMessage: plaidError.message,
+      });
 
       // Release lock with error status
       await ctx.runMutation(internal.private.releaseSyncLock, {
@@ -469,32 +541,41 @@ export const fetchLiabilities = action({
     // Decrypt access token
     const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
 
-    console.log("[Plaid Component] Fetching liabilities...");
-
-    const plaidClient = initPlaidClient(
-      args.plaidClientId,
-      args.plaidSecret,
-      args.plaidEnv
-    );
-
-    const liabilitiesResponse = await plaidClient.liabilitiesGet({
-      access_token: accessToken,
+    // Create sync log entry
+    const syncLogId = await ctx.runMutation(internal.private.createSyncLog, {
+      plaidItemId: args.plaidItemId,
+      userId: item.userId,
+      syncType: "liabilities",
+      trigger: "manual",
     });
 
-    const creditCards = liabilitiesResponse.data.liabilities?.credit ?? [];
-    const mortgages = liabilitiesResponse.data.liabilities?.mortgage ?? [];
-    const studentLoans = liabilitiesResponse.data.liabilities?.student ?? [];
+    console.log("[Plaid Component] Fetching liabilities...");
 
-    console.log(
-      `[Plaid Component] Fetched ${creditCards.length} credit cards, ${mortgages.length} mortgages, ${studentLoans.length} student loans`
-    );
+    try {
+      const plaidClient = initPlaidClient(
+        args.plaidClientId,
+        args.plaidSecret,
+        args.plaidEnv
+      );
 
-    // Bulk upsert credit card liabilities (single mutation instead of N sequential mutations)
-    if (creditCards.length > 0) {
-      await ctx.runMutation(internal.private.bulkUpsertCreditCardLiabilities, {
-        userId: item.userId,
-        plaidItemId: args.plaidItemId,
-        creditCards: creditCards.map((card) => ({
+      const liabilitiesResponse = await plaidClient.liabilitiesGet({
+        access_token: accessToken,
+      });
+
+      const creditCards = liabilitiesResponse.data.liabilities?.credit ?? [];
+      const mortgages = liabilitiesResponse.data.liabilities?.mortgage ?? [];
+      const studentLoans = liabilitiesResponse.data.liabilities?.student ?? [];
+
+      console.log(
+        `[Plaid Component] Fetched ${creditCards.length} credit cards, ${mortgages.length} mortgages, ${studentLoans.length} student loans`
+      );
+
+      // Bulk upsert credit card liabilities (single mutation instead of N sequential mutations)
+      if (creditCards.length > 0) {
+        await ctx.runMutation(internal.private.bulkUpsertCreditCardLiabilities, {
+          userId: item.userId,
+          plaidItemId: args.plaidItemId,
+          creditCards: creditCards.map((card) => ({
           accountId: card.account_id ?? "",
           aprs: card.aprs.map((apr) => ({
             aprPercentage: apr.apr_percentage ?? 0,
@@ -525,15 +606,15 @@ export const fetchLiabilities = action({
               : undefined,
           nextPaymentDueDate: card.next_payment_due_date ?? undefined,
         })),
-      });
-    }
+        });
+      }
 
-    // Bulk upsert mortgage liabilities (single mutation instead of N sequential mutations)
-    if (mortgages.length > 0) {
-      await ctx.runMutation(internal.private.bulkUpsertMortgageLiabilities, {
-        userId: item.userId,
-        plaidItemId: args.plaidItemId,
-        mortgages: mortgages.map((mortgage) => ({
+      // Bulk upsert mortgage liabilities (single mutation instead of N sequential mutations)
+      if (mortgages.length > 0) {
+        await ctx.runMutation(internal.private.bulkUpsertMortgageLiabilities, {
+          userId: item.userId,
+          plaidItemId: args.plaidItemId,
+          mortgages: mortgages.map((mortgage) => ({
           accountId: mortgage.account_id ?? "",
           accountNumber: mortgage.account_number ?? undefined,
           loanTerm: mortgage.loan_term ?? undefined,
@@ -586,17 +667,17 @@ export const fetchLiabilities = action({
                 postalCode: mortgage.property_address.postal_code ?? undefined,
                 country: mortgage.property_address.country ?? undefined,
               }
-            : undefined,
-        })),
-      });
-    }
+              : undefined,
+          })),
+        });
+      }
 
-    // Bulk upsert student loan liabilities (single mutation instead of N sequential mutations)
-    if (studentLoans.length > 0) {
-      await ctx.runMutation(internal.private.bulkUpsertStudentLoanLiabilities, {
-        userId: item.userId,
-        plaidItemId: args.plaidItemId,
-        studentLoans: studentLoans.map((loan) => ({
+      // Bulk upsert student loan liabilities (single mutation instead of N sequential mutations)
+      if (studentLoans.length > 0) {
+        await ctx.runMutation(internal.private.bulkUpsertStudentLoanLiabilities, {
+          userId: item.userId,
+          plaidItemId: args.plaidItemId,
+          studentLoans: studentLoans.map((loan) => ({
           accountId: loan.account_id ?? "",
           accountNumber: loan.account_number ?? undefined,
           loanName: loan.loan_name ?? undefined,
@@ -659,20 +740,43 @@ export const fetchLiabilities = action({
                 postalCode: loan.servicer_address.postal_code ?? undefined,
                 country: loan.servicer_address.country ?? undefined,
               }
-            : undefined,
-        })),
+              : undefined,
+          })),
+        });
+      }
+
+      console.log(
+        `[Plaid Component] Stored ${creditCards.length} credit cards, ${mortgages.length} mortgages, ${studentLoans.length} student loans`
+      );
+
+      // Complete sync log with success
+      await ctx.runMutation(internal.private.completeSyncLogSuccess, {
+        syncLogId,
+        result: {
+          accountsUpdated: creditCards.length + mortgages.length + studentLoans.length,
+        },
       });
+
+      return {
+        creditCards: creditCards.length,
+        mortgages: mortgages.length,
+        studentLoans: studentLoans.length,
+      };
+    } catch (error: unknown) {
+      const plaidError = categorizeError(error);
+      console.error(
+        `[Plaid Component] Liabilities error: ${formatErrorForLog(plaidError)}`
+      );
+
+      // Complete sync log with error
+      await ctx.runMutation(internal.private.completeSyncLogError, {
+        syncLogId,
+        errorCode: plaidError.code,
+        errorMessage: plaidError.message,
+      });
+
+      throw error;
     }
-
-    console.log(
-      `[Plaid Component] Stored ${creditCards.length} credit cards, ${mortgages.length} mortgages, ${studentLoans.length} student loans`
-    );
-
-    return {
-      creditCards: creditCards.length,
-      mortgages: mortgages.length,
-      studentLoans: studentLoans.length,
-    };
   },
 });
 
@@ -716,79 +820,111 @@ export const fetchRecurringStreams = action({
     // Decrypt access token
     const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
 
-    console.log("[Plaid Component] Fetching recurring streams...");
-
-    const plaidClient = initPlaidClient(
-      args.plaidClientId,
-      args.plaidSecret,
-      args.plaidEnv
-    );
-
-    const recurringResponse = await plaidClient.transactionsRecurringGet({
-      access_token: accessToken,
+    // Create sync log entry
+    const syncLogId = await ctx.runMutation(internal.private.createSyncLog, {
+      plaidItemId: args.plaidItemId,
+      userId: item.userId,
+      syncType: "recurring",
+      trigger: "manual",
     });
 
-    const inflowStreams = recurringResponse.data.inflow_streams ?? [];
-    const outflowStreams = recurringResponse.data.outflow_streams ?? [];
+    console.log("[Plaid Component] Fetching recurring streams...");
 
-    console.log(
-      `[Plaid Component] Fetched ${inflowStreams.length} inflows, ${outflowStreams.length} outflows`
-    );
+    try {
+      const plaidClient = initPlaidClient(
+        args.plaidClientId,
+        args.plaidSecret,
+        args.plaidEnv
+      );
 
-    // Transform and store inflow streams (income)
-    const inflowData = inflowStreams.map((stream) => ({
-      streamId: stream.stream_id,
-      accountId: stream.account_id,
-      description: stream.description,
-      merchantName: stream.merchant_name ?? undefined,
-      averageAmount: convertAmountToMilliunits(stream.average_amount?.amount ?? 0),
-      lastAmount: convertAmountToMilliunits(stream.last_amount?.amount ?? 0),
-      isoCurrencyCode: stream.average_amount?.iso_currency_code ?? "USD",
-      frequency: stream.frequency,
-      status: stream.status as "MATURE" | "EARLY_DETECTION" | "TOMBSTONED",
-      isActive: stream.is_active,
-      type: "inflow" as const,
-      category: stream.personal_finance_category?.primary ?? undefined,
-      firstDate: stream.first_date ?? undefined,
-      lastDate: stream.last_date ?? undefined,
-      predictedNextDate: (stream as any).predicted_next_date ?? undefined,
-    }));
-
-    // Transform and store outflow streams (expenses)
-    const outflowData = outflowStreams.map((stream) => ({
-      streamId: stream.stream_id,
-      accountId: stream.account_id,
-      description: stream.description,
-      merchantName: stream.merchant_name ?? undefined,
-      averageAmount: convertAmountToMilliunits(stream.average_amount?.amount ?? 0),
-      lastAmount: convertAmountToMilliunits(stream.last_amount?.amount ?? 0),
-      isoCurrencyCode: stream.average_amount?.iso_currency_code ?? "USD",
-      frequency: stream.frequency,
-      status: stream.status as "MATURE" | "EARLY_DETECTION" | "TOMBSTONED",
-      isActive: stream.is_active,
-      type: "outflow" as const,
-      category: stream.personal_finance_category?.primary ?? undefined,
-      firstDate: stream.first_date ?? undefined,
-      lastDate: stream.last_date ?? undefined,
-      predictedNextDate: (stream as any).predicted_next_date ?? undefined,
-    }));
-
-    // Bulk upsert all streams
-    const allStreams = [...inflowData, ...outflowData];
-    if (allStreams.length > 0) {
-      await ctx.runMutation(internal.private.bulkUpsertRecurringStreams, {
-        userId: item.userId,
-        plaidItemId: args.plaidItemId,
-        streams: allStreams,
+      const recurringResponse = await plaidClient.transactionsRecurringGet({
+        access_token: accessToken,
       });
 
-      console.log(`[Plaid Component] Stored ${allStreams.length} recurring streams`);
-    }
+      const inflowStreams = recurringResponse.data.inflow_streams ?? [];
+      const outflowStreams = recurringResponse.data.outflow_streams ?? [];
 
-    return {
-      inflows: inflowStreams.length,
-      outflows: outflowStreams.length,
-    };
+      console.log(
+        `[Plaid Component] Fetched ${inflowStreams.length} inflows, ${outflowStreams.length} outflows`
+      );
+
+      // Transform and store inflow streams (income)
+      const inflowData = inflowStreams.map((stream) => ({
+        streamId: stream.stream_id,
+        accountId: stream.account_id,
+        description: stream.description,
+        merchantName: stream.merchant_name ?? undefined,
+        averageAmount: convertAmountToMilliunits(stream.average_amount?.amount ?? 0),
+        lastAmount: convertAmountToMilliunits(stream.last_amount?.amount ?? 0),
+        isoCurrencyCode: stream.average_amount?.iso_currency_code ?? "USD",
+        frequency: stream.frequency,
+        status: stream.status as "MATURE" | "EARLY_DETECTION" | "TOMBSTONED",
+        isActive: stream.is_active,
+        type: "inflow" as const,
+        category: stream.personal_finance_category?.primary ?? undefined,
+        firstDate: stream.first_date ?? undefined,
+        lastDate: stream.last_date ?? undefined,
+        predictedNextDate: (stream as any).predicted_next_date ?? undefined,
+      }));
+
+      // Transform and store outflow streams (expenses)
+      const outflowData = outflowStreams.map((stream) => ({
+        streamId: stream.stream_id,
+        accountId: stream.account_id,
+        description: stream.description,
+        merchantName: stream.merchant_name ?? undefined,
+        averageAmount: convertAmountToMilliunits(stream.average_amount?.amount ?? 0),
+        lastAmount: convertAmountToMilliunits(stream.last_amount?.amount ?? 0),
+        isoCurrencyCode: stream.average_amount?.iso_currency_code ?? "USD",
+        frequency: stream.frequency,
+        status: stream.status as "MATURE" | "EARLY_DETECTION" | "TOMBSTONED",
+        isActive: stream.is_active,
+        type: "outflow" as const,
+        category: stream.personal_finance_category?.primary ?? undefined,
+        firstDate: stream.first_date ?? undefined,
+        lastDate: stream.last_date ?? undefined,
+        predictedNextDate: (stream as any).predicted_next_date ?? undefined,
+      }));
+
+      // Bulk upsert all streams
+      const allStreams = [...inflowData, ...outflowData];
+      if (allStreams.length > 0) {
+        await ctx.runMutation(internal.private.bulkUpsertRecurringStreams, {
+          userId: item.userId,
+          plaidItemId: args.plaidItemId,
+          streams: allStreams,
+        });
+
+        console.log(`[Plaid Component] Stored ${allStreams.length} recurring streams`);
+      }
+
+      // Complete sync log with success
+      await ctx.runMutation(internal.private.completeSyncLogSuccess, {
+        syncLogId,
+        result: {
+          streamsUpdated: allStreams.length,
+        },
+      });
+
+      return {
+        inflows: inflowStreams.length,
+        outflows: outflowStreams.length,
+      };
+    } catch (error: unknown) {
+      const plaidError = categorizeError(error);
+      console.error(
+        `[Plaid Component] Recurring streams error: ${formatErrorForLog(plaidError)}`
+      );
+
+      // Complete sync log with error
+      await ctx.runMutation(internal.private.completeSyncLogError, {
+        syncLogId,
+        errorCode: plaidError.code,
+        errorMessage: plaidError.message,
+      });
+
+      throw error;
+    }
   },
 });
 

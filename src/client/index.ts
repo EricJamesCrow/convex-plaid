@@ -26,6 +26,12 @@ import type {
   CompleteReauthResult,
   TriggerTransactionsRefreshResult,
   EnrichTransactionsResult,
+  SyncType,
+  SyncTrigger,
+  SyncStatus,
+  SyncResult,
+  SyncStats,
+  InstitutionMetadata,
 } from "./types.js";
 import {
   verifyPlaidWebhook,
@@ -135,6 +141,14 @@ export type {
   TriggerTransactionsRefreshResult,
   EnrichTransactionsResult,
   ActionCtx,
+  // Sync log types
+  SyncType,
+  SyncTrigger,
+  SyncStatus,
+  SyncResult,
+  SyncStats,
+  // Institution types
+  InstitutionMetadata,
 };
 
 // =============================================================================

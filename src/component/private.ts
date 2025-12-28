@@ -1896,3 +1896,296 @@ export const pruneOldWebhookLogs = internalMutation({
     };
   },
 });
+
+// =============================================================================
+// SYNC LOGS - Audit Trail for Sync Operations
+// =============================================================================
+
+const syncTypeValidator = v.union(
+  v.literal("transactions"),
+  v.literal("liabilities"),
+  v.literal("recurring"),
+  v.literal("accounts"),
+  v.literal("onboard")
+);
+
+const triggerValidator = v.union(
+  v.literal("webhook"),
+  v.literal("scheduled"),
+  v.literal("manual"),
+  v.literal("onboard")
+);
+
+const syncStatusValidator = v.union(
+  v.literal("started"),
+  v.literal("success"),
+  v.literal("error"),
+  v.literal("rate_limited"),
+  v.literal("circuit_open")
+);
+
+const syncResultValidator = v.object({
+  transactionsAdded: v.optional(v.number()),
+  transactionsModified: v.optional(v.number()),
+  transactionsRemoved: v.optional(v.number()),
+  accountsUpdated: v.optional(v.number()),
+  streamsUpdated: v.optional(v.number()),
+  creditCardsUpdated: v.optional(v.number()),
+  mortgagesUpdated: v.optional(v.number()),
+  studentLoansUpdated: v.optional(v.number()),
+});
+
+/**
+ * Create a sync log entry when sync starts.
+ * Returns the sync log ID for later completion.
+ */
+export const createSyncLog = internalMutation({
+  args: {
+    plaidItemId: v.string(),
+    userId: v.string(),
+    syncType: syncTypeValidator,
+    trigger: triggerValidator,
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const id = await ctx.db.insert("syncLogs", {
+      plaidItemId: args.plaidItemId,
+      userId: args.userId,
+      syncType: args.syncType,
+      trigger: args.trigger,
+      startedAt: Date.now(),
+      status: "started",
+    });
+
+    return String(id);
+  },
+});
+
+/**
+ * Complete a sync log with success status.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
+ */
+export const completeSyncLogSuccess = internalMutation({
+  args: {
+    syncLogId: v.string(),
+    result: v.optional(syncResultValidator),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const id = ctx.db.normalizeId("syncLogs", args.syncLogId);
+    if (!id) return null;
+
+    const log = await ctx.db.get(id);
+    if (!log) return null;
+
+    const now = Date.now();
+    await ctx.db.patch(log._id, {
+      status: "success",
+      completedAt: now,
+      durationMs: now - log.startedAt,
+      result: args.result,
+    });
+
+    return null;
+  },
+});
+
+/**
+ * Complete a sync log with error status.
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
+ */
+export const completeSyncLogError = internalMutation({
+  args: {
+    syncLogId: v.string(),
+    errorCode: v.optional(v.string()),
+    errorMessage: v.optional(v.string()),
+    status: v.optional(syncStatusValidator), // Allow specific error statuses
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const id = ctx.db.normalizeId("syncLogs", args.syncLogId);
+    if (!id) return null;
+
+    const log = await ctx.db.get(id);
+    if (!log) return null;
+
+    const now = Date.now();
+    await ctx.db.patch(log._id, {
+      status: args.status ?? "error",
+      completedAt: now,
+      durationMs: now - log.startedAt,
+      errorCode: args.errorCode,
+      errorMessage: args.errorMessage,
+    });
+
+    return null;
+  },
+});
+
+/**
+ * Prune old sync logs to prevent table growth.
+ *
+ * Deletes logs older than the specified retention period (default: 90 days).
+ * Call this from a scheduled function (cron) to keep the table size manageable.
+ *
+ * Example cron setup in host app:
+ * ```typescript
+ * // convex/crons.ts
+ * crons.daily("prune-sync-logs", { hourUTC: 3, minuteUTC: 30 }, components.plaid.private.pruneOldSyncLogs);
+ * ```
+ */
+export const pruneOldSyncLogs = internalMutation({
+  args: {
+    /** Retention period in milliseconds (default: 90 days) */
+    retentionMs: v.optional(v.number()),
+    /** Maximum logs to delete per call (default: 100, prevents timeout) */
+    batchSize: v.optional(v.number()),
+  },
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const retentionMs = args.retentionMs ?? 90 * 24 * 60 * 60 * 1000; // 90 days
+    const batchSize = args.batchSize ?? 100;
+    const cutoff = Date.now() - retentionMs;
+
+    // Query old logs using the startedAt index
+    const oldLogs = await ctx.db
+      .query("syncLogs")
+      .withIndex("by_started_at")
+      .filter((q) => q.lt(q.field("startedAt"), cutoff))
+      .take(batchSize + 1); // Take one extra to check if there are more
+
+    const hasMore = oldLogs.length > batchSize;
+    const toDelete = oldLogs.slice(0, batchSize);
+
+    // Delete in batch
+    for (const log of toDelete) {
+      await ctx.db.delete(log._id);
+    }
+
+    console.log(
+      `[Plaid Component] Pruned ${toDelete.length} old sync logs` +
+        (hasMore ? " (more remaining)" : "")
+    );
+
+    return {
+      deleted: toDelete.length,
+      hasMore,
+    };
+  },
+});
+
+// =============================================================================
+// PLAID INSTITUTIONS - Cached Institution Metadata
+// =============================================================================
+
+/**
+ * Get institution by institutionId (internal query).
+ */
+export const getInstitutionInternal = internalQuery({
+  args: { institutionId: v.string() },
+  returns: v.union(
+    v.object({
+      _id: v.any(),
+      institutionId: v.string(),
+      name: v.string(),
+      logo: v.optional(v.string()),
+      primaryColor: v.optional(v.string()),
+      url: v.optional(v.string()),
+      products: v.optional(v.array(v.string())),
+      lastFetched: v.number(),
+    }),
+    v.null()
+  ),
+  handler: async (ctx, args) => {
+    const institution = await ctx.db
+      .query("plaidInstitutions")
+      .withIndex("by_institution_id", (q) =>
+        q.eq("institutionId", args.institutionId)
+      )
+      .first();
+
+    if (!institution) return null;
+
+    return {
+      _id: institution._id,
+      institutionId: institution.institutionId,
+      name: institution.name,
+      logo: institution.logo,
+      primaryColor: institution.primaryColor,
+      url: institution.url,
+      products: institution.products,
+      lastFetched: institution.lastFetched,
+    };
+  },
+});
+
+/**
+ * Upsert institution metadata.
+ * Creates or updates by institutionId.
+ *
+ * Uses safe upsert pattern to handle TOCTOU race conditions where
+ * concurrent calls might both try to insert the same institution.
+ */
+export const upsertInstitution = internalMutation({
+  args: {
+    institutionId: v.string(),
+    name: v.string(),
+    logo: v.optional(v.string()),
+    primaryColor: v.optional(v.string()),
+    url: v.optional(v.string()),
+    products: v.optional(v.array(v.string())),
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+
+    const result = await safeUpsertWithDedup(
+      ctx,
+      // Query for existing record
+      () =>
+        ctx.db
+          .query("plaidInstitutions")
+          .withIndex("by_institution_id", (q) =>
+            q.eq("institutionId", args.institutionId)
+          )
+          .first(),
+      // Query for ALL matching records (for duplicate detection)
+      () =>
+        ctx.db
+          .query("plaidInstitutions")
+          .withIndex("by_institution_id", (q) =>
+            q.eq("institutionId", args.institutionId)
+          )
+          .collect(),
+      // Insert function
+      async () => {
+        const id = await ctx.db.insert("plaidInstitutions", {
+          institutionId: args.institutionId,
+          name: args.name,
+          logo: args.logo,
+          primaryColor: args.primaryColor,
+          url: args.url,
+          products: args.products,
+          lastFetched: now,
+        });
+        return String(id);
+      },
+      // Update function
+      async (id) => {
+        await ctx.db.patch(id, {
+          name: args.name,
+          logo: args.logo,
+          primaryColor: args.primaryColor,
+          url: args.url,
+          products: args.products,
+          lastFetched: now,
+        });
+      }
+    );
+
+    return result.id;
+  },
+});

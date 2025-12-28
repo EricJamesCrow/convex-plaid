@@ -235,6 +235,74 @@ export interface EnrichTransactionsResult {
 }
 
 // =============================================================================
+// SYNC LOG TYPES
+// =============================================================================
+
+/**
+ * Type of sync operation.
+ */
+export type SyncType =
+  | "transactions"
+  | "liabilities"
+  | "recurring"
+  | "accounts"
+  | "onboard";
+
+/**
+ * What triggered the sync.
+ */
+export type SyncTrigger = "webhook" | "scheduled" | "manual" | "onboard";
+
+/**
+ * Status of a sync operation.
+ */
+export type SyncStatus =
+  | "started"
+  | "success"
+  | "error"
+  | "rate_limited"
+  | "circuit_open";
+
+/**
+ * Result counts from a sync operation.
+ */
+export interface SyncResult {
+  transactionsAdded?: number;
+  transactionsModified?: number;
+  transactionsRemoved?: number;
+  accountsUpdated?: number;
+  streamsUpdated?: number;
+}
+
+/**
+ * Sync statistics for monitoring.
+ */
+export interface SyncStats {
+  totalSyncs: number;
+  successfulSyncs: number;
+  failedSyncs: number;
+  averageDurationMs: number;
+  lastSyncAt: number | null;
+}
+
+// =============================================================================
+// INSTITUTION TYPES
+// =============================================================================
+
+/**
+ * Cached institution metadata.
+ */
+export interface InstitutionMetadata {
+  institutionId: string;
+  name: string;
+  logo?: string;
+  primaryColor?: string;
+  url?: string;
+  products?: string[];
+  lastFetched: number;
+}
+
+// =============================================================================
 // RE-EXPORTS
 // =============================================================================
 
