@@ -394,7 +394,8 @@ export default defineSchema({
   /**
    * Webhook Logs - Audit trail for Plaid webhooks
    *
-   * Used for deduplication (5-minute window) and debugging.
+   * Used for deduplication (24-hour window) and debugging.
+   * Run pruneOldWebhookLogs periodically (e.g., hourly cron) to prevent table growth.
    */
   webhookLogs: defineTable({
     webhookId: v.string(), // Unique identifier (itemId_code_timestamp)

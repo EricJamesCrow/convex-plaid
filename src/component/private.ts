@@ -1832,3 +1832,67 @@ export const findRecentByHash = internalQuery({
     };
   },
 });
+
+// =============================================================================
+// WEBHOOK LOG CLEANUP
+// =============================================================================
+
+/**
+ * Prune old webhook logs to prevent table growth.
+ *
+ * Deletes logs older than the specified retention period (default: 24 hours).
+ * Call this from a scheduled function (cron) to keep the table size manageable.
+ *
+ * Example cron setup in host app:
+ * ```typescript
+ * // convex/crons.ts
+ * import { cronJobs } from "convex/server";
+ * import { components } from "./_generated/api";
+ *
+ * const crons = cronJobs();
+ * crons.hourly("prune-webhook-logs", { minuteUTC: 0 }, components.plaid.private.pruneOldWebhookLogs);
+ * export default crons;
+ * ```
+ */
+export const pruneOldWebhookLogs = internalMutation({
+  args: {
+    /** Retention period in milliseconds (default: 24 hours) */
+    retentionMs: v.optional(v.number()),
+    /** Maximum logs to delete per call (default: 100, prevents timeout) */
+    batchSize: v.optional(v.number()),
+  },
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const retentionMs = args.retentionMs ?? 24 * 60 * 60 * 1000; // 24 hours
+    const batchSize = args.batchSize ?? 100;
+    const cutoff = Date.now() - retentionMs;
+
+    // Query old logs using the receivedAt index
+    const oldLogs = await ctx.db
+      .query("webhookLogs")
+      .withIndex("by_received_at")
+      .filter((q) => q.lt(q.field("receivedAt"), cutoff))
+      .take(batchSize + 1); // Take one extra to check if there are more
+
+    const hasMore = oldLogs.length > batchSize;
+    const toDelete = oldLogs.slice(0, batchSize);
+
+    // Delete in batch
+    for (const log of toDelete) {
+      await ctx.db.delete(log._id);
+    }
+
+    console.log(
+      `[Plaid Component] Pruned ${toDelete.length} old webhook logs` +
+        (hasMore ? " (more remaining)" : "")
+    );
+
+    return {
+      deleted: toDelete.length,
+      hasMore,
+    };
+  },
+});
