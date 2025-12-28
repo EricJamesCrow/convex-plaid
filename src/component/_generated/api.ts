@@ -1,4 +1,5 @@
 /* eslint-disable */
+// @ts-nocheck - Generated file has circular type references that TypeScript cannot resolve
 /**
  * Generated `api` utility.
  *
@@ -8,8 +9,16 @@
  * @module
  */
 
+import type * as actions from "../actions.js";
+import type * as circuitBreaker from "../circuitBreaker.js";
+import type * as encryption from "../encryption.js";
+import type * as errors from "../errors.js";
 import type * as private_ from "../private.js";
 import type * as public_ from "../public.js";
+import type * as rateLimiter from "../rateLimiter.js";
+import type * as scheduledActions from "../scheduledActions.js";
+import type * as utils from "../utils.js";
+import type * as webhooks from "../webhooks.js";
 
 import type {
   ApiFromModules,
@@ -19,8 +28,16 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
+  actions: typeof actions;
+  circuitBreaker: typeof circuitBreaker;
+  encryption: typeof encryption;
+  errors: typeof errors;
   private: typeof private_;
   public: typeof public_;
+  rateLimiter: typeof rateLimiter;
+  scheduledActions: typeof scheduledActions;
+  utils: typeof utils;
+  webhooks: typeof webhooks;
 }> = anyApi as any;
 
 /**

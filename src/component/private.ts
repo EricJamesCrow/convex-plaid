@@ -250,6 +250,8 @@ export const createPlaidItem = internalMutation({
     accessToken: v.string(),
     institutionId: v.optional(v.string()),
     institutionName: v.optional(v.string()),
+    products: v.array(v.string()),
+    isActive: v.optional(v.boolean()),
     status: v.string(),
   },
   returns: v.string(),
@@ -260,6 +262,8 @@ export const createPlaidItem = internalMutation({
       accessToken: args.accessToken,
       institutionId: args.institutionId,
       institutionName: args.institutionName,
+      products: args.products,
+      isActive: args.isActive ?? true,
       status: args.status as any,
       createdAt: Date.now(),
     });
@@ -288,6 +292,25 @@ export const updateItemStatus = internalMutation({
         status: args.status as any,
         syncError: args.syncError,
       });
+    }
+
+    return null;
+  },
+});
+
+/**
+ * Update lastSyncedAt timestamp for a plaidItem.
+ * Useful for sync operations that don't use cursors (e.g., fetchLiabilities).
+ * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
+ */
+export const updateLastSyncedAt = internalMutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+
+    if (item) {
+      await ctx.db.patch(item._id, { lastSyncedAt: Date.now() });
     }
 
     return null;

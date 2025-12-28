@@ -34,34 +34,76 @@ const aprValidator = v.object({
 // =============================================================================
 
 /**
+ * Validator for plaidItem return type (excludes accessToken for security)
+ */
+const plaidItemReturnValidator = v.object({
+  _id: v.string(),
+  userId: v.string(),
+  itemId: v.string(),
+  institutionId: v.optional(v.string()),
+  institutionName: v.optional(v.string()),
+  products: v.array(v.string()),
+  isActive: v.optional(v.boolean()),
+  status: v.string(),
+  syncError: v.optional(v.string()),
+  createdAt: v.number(),
+  lastSyncedAt: v.optional(v.number()),
+  activatedAt: v.optional(v.number()),
+  // Error tracking
+  errorCode: v.optional(v.string()),
+  errorMessage: v.optional(v.string()),
+  errorAt: v.optional(v.number()),
+  // Re-auth tracking
+  reauthReason: v.optional(v.string()),
+  reauthAt: v.optional(v.number()),
+  // Disconnect tracking
+  disconnectedReason: v.optional(v.string()),
+  disconnectedAt: v.optional(v.number()),
+  // Circuit breaker state (for monitoring)
+  circuitState: v.optional(v.string()),
+  consecutiveFailures: v.optional(v.number()),
+  lastFailureAt: v.optional(v.number()),
+  nextRetryAt: v.optional(v.number()),
+});
+
+/**
  * Get all plaidItems for a user.
  * NOTE: accessToken is excluded for security.
  */
 export const getItemsByUser = query({
   args: { userId: v.string() },
-  returns: v.array(
-    v.object({
-      _id: v.string(),
-      userId: v.string(),
-      itemId: v.string(),
-      institutionId: v.optional(v.string()),
-      institutionName: v.optional(v.string()),
-      status: v.string(),
-      syncError: v.optional(v.string()),
-      createdAt: v.number(),
-      lastSyncedAt: v.optional(v.number()),
-    })
-  ),
+  returns: v.array(plaidItemReturnValidator),
   handler: async (ctx, args) => {
     const items = await ctx.db
       .query("plaidItems")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
 
-    // Exclude accessToken and cursor for security
-    return items.map(({ accessToken, cursor, ...item }) => ({
-      ...item,
+    // Explicitly map fields to avoid complex type inference
+    return items.map((item) => ({
       _id: String(item._id),
+      userId: item.userId,
+      itemId: item.itemId,
+      institutionId: item.institutionId,
+      institutionName: item.institutionName,
+      products: item.products,
+      isActive: item.isActive,
+      status: item.status,
+      syncError: item.syncError,
+      createdAt: item.createdAt,
+      lastSyncedAt: item.lastSyncedAt,
+      activatedAt: item.activatedAt,
+      errorCode: item.errorCode,
+      errorMessage: item.errorMessage,
+      errorAt: item.errorAt,
+      reauthReason: item.reauthReason,
+      reauthAt: item.reauthAt,
+      disconnectedReason: item.disconnectedReason,
+      disconnectedAt: item.disconnectedAt,
+      circuitState: item.circuitState,
+      consecutiveFailures: item.consecutiveFailures,
+      lastFailureAt: item.lastFailureAt,
+      nextRetryAt: item.nextRetryAt,
     }));
   },
 });
@@ -72,31 +114,38 @@ export const getItemsByUser = query({
  */
 export const getItem = query({
   args: { plaidItemId: v.string() },
-  returns: v.union(
-    v.object({
-      _id: v.string(),
-      userId: v.string(),
-      itemId: v.string(),
-      institutionId: v.optional(v.string()),
-      institutionName: v.optional(v.string()),
-      status: v.string(),
-      syncError: v.optional(v.string()),
-      createdAt: v.number(),
-      lastSyncedAt: v.optional(v.number()),
-    }),
-    v.null()
-  ),
+  returns: v.union(plaidItemReturnValidator, v.null()),
   handler: async (ctx, args) => {
     const items = await ctx.db.query("plaidItems").collect();
     const item = items.find((i) => String(i._id) === args.plaidItemId);
 
     if (!item) return null;
 
-    // Exclude accessToken and cursor
-    const { accessToken, cursor, ...rest } = item;
+    // Explicitly return fields to avoid complex type inference
     return {
-      ...rest,
       _id: String(item._id),
+      userId: item.userId,
+      itemId: item.itemId,
+      institutionId: item.institutionId,
+      institutionName: item.institutionName,
+      products: item.products,
+      isActive: item.isActive,
+      status: item.status,
+      syncError: item.syncError,
+      createdAt: item.createdAt,
+      lastSyncedAt: item.lastSyncedAt,
+      activatedAt: item.activatedAt,
+      errorCode: item.errorCode,
+      errorMessage: item.errorMessage,
+      errorAt: item.errorAt,
+      reauthReason: item.reauthReason,
+      reauthAt: item.reauthAt,
+      disconnectedReason: item.disconnectedReason,
+      disconnectedAt: item.disconnectedAt,
+      circuitState: item.circuitState,
+      consecutiveFailures: item.consecutiveFailures,
+      lastFailureAt: item.lastFailureAt,
+      nextRetryAt: item.nextRetryAt,
     };
   },
 });
@@ -716,6 +765,51 @@ export const deletePlaidItem = mutation({
         recurringStreams: recurringStreams.length,
       },
     };
+  },
+});
+
+/**
+ * Toggle the isActive state of a plaidItem.
+ * Used to pause/resume syncing for a bank connection.
+ */
+export const togglePlaidItemActive = mutation({
+  args: { itemId: v.string() },
+  returns: v.object({ isActive: v.boolean() }),
+  handler: async (ctx, args) => {
+    const item = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_item_id", (q) => q.eq("itemId", args.itemId))
+      .unique();
+
+    if (!item) throw new Error("Item not found");
+
+    const newIsActive = !(item.isActive ?? true);
+    await ctx.db.patch(item._id, { isActive: newIsActive });
+
+    return { isActive: newIsActive };
+  },
+});
+
+/**
+ * Explicitly set the isActive state of a plaidItem.
+ * Used when you need to set a specific state rather than toggle.
+ */
+export const setPlaidItemActive = mutation({
+  args: {
+    itemId: v.string(),
+    isActive: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_item_id", (q) => q.eq("itemId", args.itemId))
+      .unique();
+
+    if (!item) throw new Error("Item not found");
+
+    await ctx.db.patch(item._id, { isActive: args.isActive });
+    return null;
   },
 });
 
