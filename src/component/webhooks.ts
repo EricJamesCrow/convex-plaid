@@ -58,7 +58,93 @@ const KEY_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 // =============================================================================
 
 /**
+ * Internal verification implementation with configurable key refresh.
+ *
+ * @param jwt - The JWT from the Plaid-Verification header
+ * @param rawBody - The raw request body as a string (NOT parsed JSON)
+ * @param plaidConfig - Plaid API credentials for key fetching
+ * @param forceRefresh - If true, bypass key cache and fetch fresh key
+ * @returns Verification result with isValid, optional error, and kid for cache management
+ */
+async function verifyPlaidWebhookInternal(
+  jwt: string,
+  rawBody: string,
+  plaidConfig: {
+    plaidClientId: string;
+    plaidSecret: string;
+    plaidEnv: string;
+  },
+  forceRefresh: boolean = false
+): Promise<WebhookVerificationResult & { kid?: string }> {
+  // Step 1: Decode JWT header to get key ID (without verification)
+  const protectedHeader = decodeProtectedHeader(jwt);
+
+  // Step 2: Verify algorithm is ES256 (Plaid uses ECDSA with P-256)
+  if (protectedHeader.alg !== "ES256") {
+    return {
+      isValid: false,
+      error: `Invalid JWT algorithm: ${protectedHeader.alg}, expected ES256`,
+    };
+  }
+
+  const kid = protectedHeader.kid;
+  if (!kid) {
+    return {
+      isValid: false,
+      error: "Missing key ID (kid) in JWT header",
+    };
+  }
+
+  // Step 3: Get public key (with caching, or force refresh)
+  const publicKey = await getVerificationKey(kid, plaidConfig, forceRefresh);
+
+  // Step 4: Verify JWT signature and get payload
+  const { payload } = await jwtVerify(jwt, publicKey, {
+    algorithms: ["ES256"],
+  });
+
+  // Step 5: Verify timestamp is recent (< 5 minutes)
+  const iat = payload.iat as number;
+  const now = Math.floor(Date.now() / 1000);
+  const maxAge = 5 * 60; // 5 minutes in seconds
+
+  if (now - iat > maxAge) {
+    return {
+      isValid: false,
+      error: `Webhook too old: ${now - iat} seconds (max ${maxAge})`,
+      kid,
+    };
+  }
+
+  // Step 6: Verify body hash matches
+  const expectedHash = payload.request_body_sha256 as string;
+  if (!expectedHash) {
+    return {
+      isValid: false,
+      error: "Missing request_body_sha256 in JWT payload",
+      kid,
+    };
+  }
+
+  const actualHash = await computeSha256(rawBody);
+
+  if (!constantTimeCompare(expectedHash, actualHash)) {
+    return {
+      isValid: false,
+      error: "Body hash mismatch - request may have been tampered",
+      kid,
+    };
+  }
+
+  return { isValid: true, kid };
+}
+
+/**
  * Verify a Plaid webhook signature.
+ *
+ * Implements retry logic with cache invalidation to handle Plaid key rotation.
+ * If verification fails and the key was from cache, clears the cache entry
+ * and retries with a fresh key before returning an error.
  *
  * @param jwt - The JWT from the Plaid-Verification header
  * @param rawBody - The raw request body as a string (NOT parsed JSON)
@@ -75,65 +161,100 @@ export async function verifyPlaidWebhook(
   }
 ): Promise<WebhookVerificationResult> {
   try {
-    // Step 1: Decode JWT header to get key ID (without verification)
-    const protectedHeader = decodeProtectedHeader(jwt);
+    // First attempt: try with cached key (if available)
+    const result = await verifyPlaidWebhookInternal(
+      jwt,
+      rawBody,
+      plaidConfig,
+      false
+    );
 
-    // Step 2: Verify algorithm is ES256 (Plaid uses ECDSA with P-256)
-    if (protectedHeader.alg !== "ES256") {
-      return {
-        isValid: false,
-        error: `Invalid JWT algorithm: ${protectedHeader.alg}, expected ES256`,
-      };
+    if (result.isValid) {
+      return { isValid: true };
     }
 
-    const kid = protectedHeader.kid;
-    if (!kid) {
-      return {
-        isValid: false,
-        error: "Missing key ID (kid) in JWT header",
-      };
+    // If verification failed, check if we should retry with a fresh key
+    // Only retry for signature-related errors when we have a cached key
+    const kid = result.kid;
+    if (kid && keyCache.has(kid)) {
+      // Invalidate the cached key and retry with a fresh one
+      // This handles Plaid key rotation scenarios
+      invalidateCachedKey(kid);
+
+      try {
+        const retryResult = await verifyPlaidWebhookInternal(
+          jwt,
+          rawBody,
+          plaidConfig,
+          true // Force refresh
+        );
+
+        if (retryResult.isValid) {
+          return { isValid: true };
+        }
+
+        // Return the retry result error
+        return {
+          isValid: false,
+          error: retryResult.error,
+        };
+      } catch (retryErr) {
+        // If retry also fails, return the original error
+        return {
+          isValid: false,
+          error:
+            retryErr instanceof Error
+              ? retryErr.message
+              : "Unknown verification error on retry",
+        };
+      }
     }
 
-    // Step 3: Get public key (with caching)
-    const publicKey = await getVerificationKey(kid, plaidConfig);
-
-    // Step 4: Verify JWT signature and get payload
-    const { payload } = await jwtVerify(jwt, publicKey, {
-      algorithms: ["ES256"],
-    });
-
-    // Step 5: Verify timestamp is recent (< 5 minutes)
-    const iat = payload.iat as number;
-    const now = Math.floor(Date.now() / 1000);
-    const maxAge = 5 * 60; // 5 minutes in seconds
-
-    if (now - iat > maxAge) {
-      return {
-        isValid: false,
-        error: `Webhook too old: ${now - iat} seconds (max ${maxAge})`,
-      };
-    }
-
-    // Step 6: Verify body hash matches
-    const expectedHash = payload.request_body_sha256 as string;
-    if (!expectedHash) {
-      return {
-        isValid: false,
-        error: "Missing request_body_sha256 in JWT payload",
-      };
-    }
-
-    const actualHash = await computeSha256(rawBody);
-
-    if (!constantTimeCompare(expectedHash, actualHash)) {
-      return {
-        isValid: false,
-        error: "Body hash mismatch - request may have been tampered",
-      };
-    }
-
-    return { isValid: true };
+    // No cached key or non-signature error, return original result
+    return {
+      isValid: false,
+      error: result.error,
+    };
   } catch (err) {
+    // Initial attempt threw an error - check if we should retry
+    try {
+      const protectedHeader = decodeProtectedHeader(jwt);
+      const kid = protectedHeader.kid;
+
+      if (kid && keyCache.has(kid)) {
+        // Invalidate cached key and retry
+        invalidateCachedKey(kid);
+
+        try {
+          const retryResult = await verifyPlaidWebhookInternal(
+            jwt,
+            rawBody,
+            plaidConfig,
+            true // Force refresh
+          );
+
+          if (retryResult.isValid) {
+            return { isValid: true };
+          }
+
+          return {
+            isValid: false,
+            error: retryResult.error,
+          };
+        } catch (retryErr) {
+          return {
+            isValid: false,
+            error:
+              retryErr instanceof Error
+                ? retryErr.message
+                : "Unknown verification error on retry",
+          };
+        }
+      }
+    } catch {
+      // Could not decode header for retry, return original error
+    }
+
     return {
       isValid: false,
       error: err instanceof Error ? err.message : "Unknown verification error",
@@ -146,10 +267,33 @@ export async function verifyPlaidWebhook(
 // =============================================================================
 
 /**
+ * Invalidate a cached verification key.
+ *
+ * Used when JWT verification fails to force a fresh key fetch on retry.
+ * This handles Plaid key rotation scenarios where the cached key becomes stale.
+ *
+ * @param kid - Key ID to invalidate
+ */
+export function invalidateCachedKey(kid: string): void {
+  keyCache.delete(kid);
+}
+
+/**
+ * Check if a key is currently cached.
+ *
+ * @param kid - Key ID to check
+ * @returns true if the key is in the cache
+ */
+export function isKeyCached(kid: string): boolean {
+  return keyCache.has(kid);
+}
+
+/**
  * Get Plaid's verification key by key ID (with caching).
  *
  * @param kid - Key ID from JWT header
  * @param plaidConfig - Plaid API credentials
+ * @param forceRefresh - If true, bypass cache and fetch a fresh key
  * @returns Public key for verification
  */
 async function getVerificationKey(
@@ -158,12 +302,15 @@ async function getVerificationKey(
     plaidClientId: string;
     plaidSecret: string;
     plaidEnv: string;
-  }
+  },
+  forceRefresh: boolean = false
 ): Promise<CryptoKey> {
-  // Check cache first
-  const cached = keyCache.get(kid);
-  if (cached && cached.expires > Date.now()) {
-    return cached.key;
+  // Check cache first (unless forceRefresh is requested)
+  if (!forceRefresh) {
+    const cached = keyCache.get(kid);
+    if (cached && cached.expires > Date.now()) {
+      return cached.key;
+    }
   }
 
   // Create Plaid client for key fetch
@@ -351,8 +498,8 @@ export function isHistoricalUpdateWebhook(
  * Configuration for webhook deduplication
  */
 export const DEDUP_CONFIG = {
-  /** Time window in ms to check for duplicates (5 minutes) */
-  windowMs: 5 * 60 * 1000,
+  /** Time window in ms to check for duplicates (24 hours - Plaid may retry over extended periods) */
+  windowMs: 24 * 60 * 60 * 1000,
 } as const;
 
 /**

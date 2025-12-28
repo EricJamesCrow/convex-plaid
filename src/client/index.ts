@@ -39,6 +39,81 @@ import {
 import type { ComponentApi } from "../component/_generated/component.js";
 
 // =============================================================================
+// CONFIG VALIDATION
+// =============================================================================
+
+/**
+ * Error thrown when Plaid configuration is invalid.
+ */
+export class PlaidConfigError extends Error {
+  constructor(message: string) {
+    super(`[Plaid Config] ${message}`);
+    this.name = "PlaidConfigError";
+  }
+}
+
+/**
+ * Valid Plaid environment values.
+ */
+const VALID_PLAID_ENVS = ["sandbox", "development", "production"] as const;
+
+/**
+ * Validate Plaid configuration.
+ * @throws PlaidConfigError if config is invalid
+ */
+function validatePlaidConfig(config: PlaidConfig): void {
+  // Check required fields exist and are non-empty strings
+  const requiredFields: (keyof PlaidConfig)[] = [
+    "PLAID_CLIENT_ID",
+    "PLAID_SECRET",
+    "PLAID_ENV",
+    "ENCRYPTION_KEY",
+  ];
+
+  for (const field of requiredFields) {
+    const value = config[field];
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new PlaidConfigError(
+        `${field} is required and must be a non-empty string`
+      );
+    }
+  }
+
+  // Validate PLAID_ENV
+  if (!VALID_PLAID_ENVS.includes(config.PLAID_ENV as typeof VALID_PLAID_ENVS[number])) {
+    throw new PlaidConfigError(
+      `PLAID_ENV must be one of: ${VALID_PLAID_ENVS.join(", ")}. Got: "${config.PLAID_ENV}"`
+    );
+  }
+
+  // Validate ENCRYPTION_KEY is valid base64 and correct length
+  try {
+    // Handle both Node.js Buffer and browser atob
+    let decoded: Uint8Array;
+    if (typeof Buffer !== "undefined") {
+      decoded = Buffer.from(config.ENCRYPTION_KEY, "base64");
+    } else {
+      const binaryString = atob(config.ENCRYPTION_KEY);
+      decoded = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        decoded[i] = binaryString.charCodeAt(i);
+      }
+    }
+
+    if (decoded.length !== 32) {
+      throw new PlaidConfigError(
+        `ENCRYPTION_KEY must be a base64-encoded 256-bit (32 byte) key. Got ${decoded.length} bytes.`
+      );
+    }
+  } catch (e) {
+    if (e instanceof PlaidConfigError) throw e;
+    throw new PlaidConfigError(
+      `ENCRYPTION_KEY is not valid base64: ${e instanceof Error ? e.message : String(e)}`
+    );
+  }
+}
+
+// =============================================================================
 // EXPORTS
 // =============================================================================
 
@@ -100,6 +175,7 @@ export class Plaid {
     public component: PlaidComponent,
     config: PlaidConfig
   ) {
+    validatePlaidConfig(config);
     this.config = config;
   }
 

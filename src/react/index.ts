@@ -28,7 +28,7 @@
  * ```
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { usePlaidLink as usePlaidLinkBase } from "react-plaid-link";
 import type { PlaidLinkOptions, PlaidLinkOnSuccess } from "react-plaid-link";
 import { useAction } from "convex/react";
@@ -178,6 +178,10 @@ export function usePlaidLink(options: UsePlaidLinkOptions): UsePlaidLinkResult {
   const [isExchanging, setIsExchanging] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  // Refs to track current fetch and prevent race conditions
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isFetchingRef = useRef(false);
+
   // Convex actions
   const createToken = useAction(createLinkToken);
   const exchangeToken = useAction(exchangePublicToken);
@@ -185,6 +189,18 @@ export function usePlaidLink(options: UsePlaidLinkOptions): UsePlaidLinkResult {
   // Fetch link token
   const fetchLinkToken = useCallback(async () => {
     if (!userId) return;
+
+    // Prevent concurrent fetches
+    if (isFetchingRef.current) return;
+
+    // Abort any previous pending request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    isFetchingRef.current = true;
 
     setIsLoading(true);
     setError(null);
@@ -195,13 +211,21 @@ export function usePlaidLink(options: UsePlaidLinkOptions): UsePlaidLinkResult {
         products,
         webhookUrl,
       });
+
+      // Check if this request was aborted
+      if (abortController.signal.aborted) return;
+
       setLinkToken(result.linkToken);
     } catch (e) {
+      if (abortController.signal.aborted) return;
       const err = e instanceof Error ? e : new Error(String(e));
       setError(err);
       onError?.(err);
     } finally {
-      setIsLoading(false);
+      if (!abortController.signal.aborted) {
+        setIsLoading(false);
+      }
+      isFetchingRef.current = false;
     }
   }, [userId, products, webhookUrl, createToken, onError]);
 
@@ -211,6 +235,15 @@ export function usePlaidLink(options: UsePlaidLinkOptions): UsePlaidLinkResult {
       fetchLinkToken();
     }
   }, [autoFetchToken, userId, fetchLinkToken]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   // Handle Plaid Link success
   const handleSuccess: PlaidLinkOnSuccess = useCallback(
@@ -353,6 +386,10 @@ export function useUpdatePlaidLink(
   const [isExchanging, setIsExchanging] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  // Refs to track current fetch and prevent race conditions
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isFetchingRef = useRef(false);
+
   // Convex actions
   const createToken = useAction(createUpdateLinkToken);
   const completeAuth = useAction(completeReauth);
@@ -361,18 +398,38 @@ export function useUpdatePlaidLink(
   const fetchLinkToken = useCallback(async () => {
     if (!plaidItemId) return;
 
+    // Prevent concurrent fetches
+    if (isFetchingRef.current) return;
+
+    // Abort any previous pending request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    isFetchingRef.current = true;
+
     setIsLoading(true);
     setError(null);
 
     try {
       const result = await createToken({ plaidItemId });
+
+      // Check if this request was aborted
+      if (abortController.signal.aborted) return;
+
       setLinkToken(result.linkToken);
     } catch (e) {
+      if (abortController.signal.aborted) return;
       const err = e instanceof Error ? e : new Error(String(e));
       setError(err);
       onError?.(err);
     } finally {
-      setIsLoading(false);
+      if (!abortController.signal.aborted) {
+        setIsLoading(false);
+      }
+      isFetchingRef.current = false;
     }
   }, [plaidItemId, createToken, onError]);
 
@@ -382,6 +439,15 @@ export function useUpdatePlaidLink(
       fetchLinkToken();
     }
   }, [autoFetchToken, plaidItemId, fetchLinkToken]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   // Handle Plaid Link success (re-auth doesn't return new public token)
   const handleSuccess: PlaidLinkOnSuccess = useCallback(
