@@ -257,13 +257,40 @@ const plaid = new Plaid(components.plaid, {
 | `createLinkToken(ctx, { userId, products?, webhookUrl? })` | Create Plaid Link token | `{ linkToken }` |
 | `exchangePublicToken(ctx, { publicToken, userId })` | Exchange public token, create plaidItem | `{ success, itemId, plaidItemId }` |
 | `fetchAccounts(ctx, { plaidItemId })` | Fetch/store accounts | `{ accountCount }` |
-| `syncTransactions(ctx, { plaidItemId })` | Sync transactions (cursor-based) | `{ added, modified, removed, cursor }` |
+| `syncTransactions(ctx, { plaidItemId, maxPages?, maxTransactions? })` | Sync transactions with pagination | `{ added, modified, removed, cursor, hasMore, pagesProcessed }` |
 | `fetchLiabilities(ctx, { plaidItemId })` | Fetch credit card liabilities | `{ creditCards }` |
 | `fetchRecurringStreams(ctx, { plaidItemId })` | Detect subscriptions/income | `{ inflows, outflows }` |
 | `createUpdateLinkToken(ctx, { plaidItemId })` | Create re-auth link token | `{ linkToken }` |
 | `completeReauth(ctx, { plaidItemId })` | Complete re-auth flow | `{ success }` |
-| `onboardItem(ctx, { plaidItemId })` | Run all sync operations | Combined results |
+| `onboardItem(ctx, { plaidItemId })` | Run all sync operations | `{ accounts, transactions, liabilities, recurringStreams?, errors? }` |
 | `api` | Access public queries/mutations | Component API |
+
+### Transaction Sync Pagination
+
+The `syncTransactions` method supports pagination to handle large transaction histories:
+
+```typescript
+const result = await plaid.syncTransactions(ctx, {
+  plaidItemId: "...",
+  maxPages: 10,        // Max pages per call (default: 10)
+  maxTransactions: 5000, // Max transactions before stopping (default: 5000)
+});
+
+if (result.hasMore) {
+  // Schedule another sync to continue
+  await ctx.scheduler.runAfter(0, api.plaid.syncTransactions, { plaidItemId });
+}
+```
+
+### Config Validation
+
+The `Plaid` constructor validates configuration at initialization:
+
+- All required fields must be non-empty strings
+- `PLAID_ENV` must be `sandbox`, `development`, or `production`
+- `ENCRYPTION_KEY` must be valid base64 encoding 32 bytes (256 bits)
+
+Invalid config throws `PlaidConfigError` with a descriptive message.
 
 ---
 
@@ -435,21 +462,23 @@ https://your-project.convex.site/plaid/webhook
 
 Webhooks are verified using Plaid's ES256 JWT signature when `plaidConfig` is provided. The component:
 
-1. Fetches Plaid's public key from their JWKS endpoint
-2. Verifies the JWT signature
+1. Fetches Plaid's public key from their JWKS endpoint (cached 24 hours)
+2. Verifies the JWT signature (with automatic retry on key rotation)
 3. Validates the request body hash matches
 4. Checks timestamp is within 5 minutes
+5. Deduplicates webhooks using body hash (24-hour window)
 
 ---
 
-## Cron Jobs (Scheduled Sync)
+## Cron Jobs (Scheduled Tasks)
 
-The component provides internal actions for scheduled sync. Set up crons in your host app:
+The component provides internal mutations for scheduled maintenance. Set up crons in your host app:
 
 ```typescript
 // convex/crons.ts
 import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
+import { components } from "./_generated/api";
 
 const crons = cronJobs();
 
@@ -458,6 +487,13 @@ crons.daily(
   "daily-plaid-sync",
   { hourUTC: 2, minuteUTC: 0 },
   internal.plaidSync.syncAllItems
+);
+
+// Prune old webhook logs hourly (keeps table size manageable)
+crons.hourly(
+  "prune-webhook-logs",
+  { minuteUTC: 0 },
+  components.plaid.private.pruneOldWebhookLogs
 );
 
 export default crons;
@@ -487,6 +523,19 @@ export const syncAllItems = internalAction({
 });
 ```
 
+### Webhook Log Cleanup
+
+The `pruneOldWebhookLogs` mutation deletes webhook logs older than 24 hours:
+
+```typescript
+// Called automatically by cron, or manually:
+await ctx.runMutation(components.plaid.private.pruneOldWebhookLogs, {
+  retentionMs: 24 * 60 * 60 * 1000, // Optional: default 24 hours
+  batchSize: 100,                    // Optional: default 100 per call
+});
+// Returns: { deleted: number, hasMore: boolean }
+```
+
 ---
 
 ## Data Model
@@ -509,6 +558,8 @@ Connection metadata for each linked bank/institution.
 | `institutionName` | `string?` | "Chase", "Wells Fargo" |
 | `status` | `enum` | `pending`, `syncing`, `active`, `error`, `needs_reauth` |
 | `syncError` | `string?` | Error message from last sync |
+| `syncVersion` | `number?` | Optimistic lock version (prevents race conditions) |
+| `syncStartedAt` | `number?` | When current sync started (for timeout detection) |
 | `createdAt` | `number` | Unix timestamp |
 | `lastSyncedAt` | `number?` | Last successful sync |
 
@@ -583,13 +634,22 @@ Detected subscriptions, bills, income.
 - Access tokens are encrypted using **JWE (A256GCM)** before storage
 - Encryption key is a 256-bit key, base64-encoded
 - Tokens are decrypted only when making Plaid API calls
+- Token format is validated before decryption (throws `TokenDecryptionError` on invalid format)
 - Access tokens are **never** returned in query results
+
+### Config Validation
+
+- All config fields validated at `Plaid` class construction
+- Invalid config throws `PlaidConfigError` immediately (fail-fast)
+- Validates encryption key is proper base64 and correct length (32 bytes)
 
 ### Webhook Verification
 
 - All webhooks verified using Plaid's ES256 JWT signature
 - Body hash validation prevents tampering
 - 5-minute timestamp window prevents replay attacks
+- 24-hour deduplication window prevents duplicate processing
+- Automatic key cache invalidation and retry on Plaid key rotation
 - Failed verification returns 401
 
 ### Component Isolation
@@ -597,6 +657,12 @@ Detected subscriptions, bills, income.
 - Component has its own database tables
 - Host app cannot directly modify component tables
 - All access through public queries/mutations/actions
+
+### Concurrency Protection
+
+- Optimistic locking prevents transaction sync race conditions
+- TOCTOU-safe upsert patterns with duplicate detection and cleanup
+- Sync lock timeout detection (stale locks auto-expire after 5 minutes)
 
 ---
 
