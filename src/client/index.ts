@@ -405,18 +405,37 @@ export class Plaid {
     const liabilities = await this.fetchLiabilities(ctx, args);
 
     // Also fetch recurring streams (Phase 2)
+    // This may fail for some accounts, so we capture success/failure
+    let recurringStreams: FetchRecurringStreamsResult | undefined;
+    let recurringStreamsError: string | undefined;
+
     try {
-      await this.fetchRecurringStreams(ctx, args);
+      recurringStreams = await this.fetchRecurringStreams(ctx, args);
     } catch (e) {
       // Recurring streams may not be available for all accounts
-      console.warn("[Plaid Component] Failed to fetch recurring streams:", e);
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      console.warn("[Plaid Component] Failed to fetch recurring streams:", errorMessage);
+      recurringStreamsError = errorMessage;
     }
 
-    return {
+    const result: OnboardItemResult = {
       accounts,
       transactions,
       liabilities,
     };
+
+    // Add optional fields only if they have values
+    if (recurringStreams) {
+      result.recurringStreams = recurringStreams;
+    }
+
+    if (recurringStreamsError) {
+      result.errors = {
+        recurringStreams: recurringStreamsError,
+      };
+    }
+
+    return result;
   }
 
   // ===========================================================================

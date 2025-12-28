@@ -12,6 +12,80 @@ import { internalMutation, internalQuery } from "./_generated/server.js";
 import type { QueryCtx, MutationCtx } from "./_generated/server.js";
 
 // =============================================================================
+// HELPER: Safe Upsert Pattern (TOCTOU Protection)
+// =============================================================================
+
+/**
+ * Safe upsert pattern to handle TOCTOU (Time-of-Check-Time-of-Use) race conditions.
+ *
+ * Problem: In concurrent upsert operations, two calls might both:
+ * 1. Query and find no existing record
+ * 2. Both insert, creating duplicates
+ *
+ * Solution: Insert-first approach with duplicate detection and cleanup.
+ * 1. Try to insert first (optimistic)
+ * 2. After insert, check if duplicates exist (same key, different _id)
+ * 3. If duplicates found, keep the one with earliest _creationTime, delete others
+ * 4. If we deleted our insert, update the surviving record
+ *
+ * This ensures exactly one record per unique key, even under concurrent inserts.
+ *
+ * Alternative approach for existing records:
+ * - Query first, if exists, update it
+ * - If not exists, do insert-then-verify pattern above
+ *
+ * @param ctx - Mutation context
+ * @param queryFn - Function to query for existing record(s) by unique key
+ * @param insertFn - Function to insert a new record
+ * @param updateFn - Function to update an existing record
+ * @returns { created: boolean; id: string } - Whether record was created or updated
+ */
+async function safeUpsertWithDedup<T extends { _id: any; _creationTime: number }>(
+  ctx: MutationCtx,
+  queryFn: () => Promise<T | null>,
+  queryAllFn: () => Promise<T[]>,
+  insertFn: () => Promise<string>,
+  updateFn: (id: any) => Promise<void>
+): Promise<{ created: boolean; id: string }> {
+  // First check if record exists
+  const existing = await queryFn();
+
+  if (existing) {
+    // Record exists - just update it
+    await updateFn(existing._id);
+    return { created: false, id: String(existing._id) };
+  }
+
+  // No existing record - insert new one
+  const newId = await insertFn();
+
+  // CRITICAL: After insert, check for duplicates created by concurrent mutations
+  // This handles the race condition where another mutation inserted between
+  // our query and insert
+  const allMatching = await queryAllFn();
+
+  if (allMatching.length > 1) {
+    // Duplicates detected! Keep the one with earliest creation time
+    const sorted = allMatching.sort((a, b) => a._creationTime - b._creationTime);
+    const survivor = sorted[0];
+    const duplicates = sorted.slice(1);
+
+    // Delete all duplicates
+    for (const dup of duplicates) {
+      await ctx.db.delete(dup._id);
+    }
+
+    // If our insert was a duplicate (not the survivor), update the survivor
+    if (String(survivor._id) !== newId) {
+      await updateFn(survivor._id);
+      return { created: false, id: String(survivor._id) };
+    }
+  }
+
+  return { created: true, id: newId };
+}
+
+// =============================================================================
 // HELPER: Efficient ID Lookup
 // =============================================================================
 
@@ -572,6 +646,9 @@ export const resetCircuitBreaker = internalMutation({
 /**
  * Bulk upsert accounts.
  * Creates new accounts or updates existing ones by accountId.
+ *
+ * Uses safe upsert pattern to handle TOCTOU race conditions where
+ * concurrent calls might both try to insert the same account.
  */
 export const bulkUpsertAccounts = internalMutation({
   args: {
@@ -589,29 +666,47 @@ export const bulkUpsertAccounts = internalMutation({
     let updated = 0;
 
     for (const account of args.accounts) {
-      const existing = await ctx.db
-        .query("plaidAccounts")
-        .withIndex("by_account_id", (q) => q.eq("accountId", account.accountId))
-        .first();
+      const result = await safeUpsertWithDedup(
+        ctx,
+        // Query for existing record
+        () =>
+          ctx.db
+            .query("plaidAccounts")
+            .withIndex("by_account_id", (q) => q.eq("accountId", account.accountId))
+            .first(),
+        // Query for ALL matching records (for duplicate detection)
+        () =>
+          ctx.db
+            .query("plaidAccounts")
+            .withIndex("by_account_id", (q) => q.eq("accountId", account.accountId))
+            .collect(),
+        // Insert function
+        async () => {
+          const id = await ctx.db.insert("plaidAccounts", {
+            userId: args.userId,
+            plaidItemId: args.plaidItemId,
+            ...account,
+            createdAt: now,
+          });
+          return String(id);
+        },
+        // Update function
+        async (id) => {
+          await ctx.db.patch(id, {
+            name: account.name,
+            officialName: account.officialName,
+            mask: account.mask,
+            type: account.type,
+            subtype: account.subtype,
+            balances: account.balances,
+          });
+        }
+      );
 
-      if (existing) {
-        await ctx.db.patch(existing._id, {
-          name: account.name,
-          officialName: account.officialName,
-          mask: account.mask,
-          type: account.type,
-          subtype: account.subtype,
-          balances: account.balances,
-        });
-        updated++;
-      } else {
-        await ctx.db.insert("plaidAccounts", {
-          userId: args.userId,
-          plaidItemId: args.plaidItemId,
-          ...account,
-          createdAt: now,
-        });
+      if (result.created) {
         created++;
+      } else {
+        updated++;
       }
     }
 
@@ -699,6 +794,9 @@ export const bulkUpsertTransactions = internalMutation({
 /**
  * Upsert credit card liability.
  * Creates or updates by accountId.
+ *
+ * Uses safe upsert pattern to handle TOCTOU race conditions where
+ * concurrent calls might both try to insert the same liability.
  */
 export const upsertCreditCardLiability = internalMutation({
   args: {
@@ -718,42 +816,149 @@ export const upsertCreditCardLiability = internalMutation({
   handler: async (ctx, args) => {
     const now = Date.now();
 
-    const existing = await ctx.db
-      .query("plaidCreditCardLiabilities")
-      .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
-      .first();
+    const result = await safeUpsertWithDedup(
+      ctx,
+      // Query for existing record
+      () =>
+        ctx.db
+          .query("plaidCreditCardLiabilities")
+          .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+          .first(),
+      // Query for ALL matching records (for duplicate detection)
+      () =>
+        ctx.db
+          .query("plaidCreditCardLiabilities")
+          .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+          .collect(),
+      // Insert function
+      async () => {
+        const id = await ctx.db.insert("plaidCreditCardLiabilities", {
+          userId: args.userId,
+          plaidItemId: args.plaidItemId,
+          accountId: args.accountId,
+          aprs: args.aprs,
+          isOverdue: args.isOverdue,
+          lastPaymentAmount: args.lastPaymentAmount,
+          lastPaymentDate: args.lastPaymentDate,
+          lastStatementBalance: args.lastStatementBalance,
+          lastStatementIssueDate: args.lastStatementIssueDate,
+          minimumPaymentAmount: args.minimumPaymentAmount,
+          nextPaymentDueDate: args.nextPaymentDueDate,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return String(id);
+      },
+      // Update function
+      async (id) => {
+        await ctx.db.patch(id, {
+          aprs: args.aprs,
+          isOverdue: args.isOverdue,
+          lastPaymentAmount: args.lastPaymentAmount,
+          lastPaymentDate: args.lastPaymentDate,
+          lastStatementBalance: args.lastStatementBalance,
+          lastStatementIssueDate: args.lastStatementIssueDate,
+          minimumPaymentAmount: args.minimumPaymentAmount,
+          nextPaymentDueDate: args.nextPaymentDueDate,
+          updatedAt: now,
+        });
+      }
+    );
 
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        aprs: args.aprs,
-        isOverdue: args.isOverdue,
-        lastPaymentAmount: args.lastPaymentAmount,
-        lastPaymentDate: args.lastPaymentDate,
-        lastStatementBalance: args.lastStatementBalance,
-        lastStatementIssueDate: args.lastStatementIssueDate,
-        minimumPaymentAmount: args.minimumPaymentAmount,
-        nextPaymentDueDate: args.nextPaymentDueDate,
-        updatedAt: now,
-      });
-      return String(existing._id);
-    } else {
-      const id = await ctx.db.insert("plaidCreditCardLiabilities", {
-        userId: args.userId,
-        plaidItemId: args.plaidItemId,
-        accountId: args.accountId,
-        aprs: args.aprs,
-        isOverdue: args.isOverdue,
-        lastPaymentAmount: args.lastPaymentAmount,
-        lastPaymentDate: args.lastPaymentDate,
-        lastStatementBalance: args.lastStatementBalance,
-        lastStatementIssueDate: args.lastStatementIssueDate,
-        minimumPaymentAmount: args.minimumPaymentAmount,
-        nextPaymentDueDate: args.nextPaymentDueDate,
-        createdAt: now,
-        updatedAt: now,
-      });
-      return String(id);
+    return result.id;
+  },
+});
+
+const creditCardLiabilityValidator = v.object({
+  accountId: v.string(),
+  aprs: v.array(aprValidator),
+  isOverdue: v.boolean(),
+  lastPaymentAmount: v.optional(v.number()),
+  lastPaymentDate: v.optional(v.string()),
+  lastStatementBalance: v.optional(v.number()),
+  lastStatementIssueDate: v.optional(v.string()),
+  minimumPaymentAmount: v.optional(v.number()),
+  nextPaymentDueDate: v.optional(v.string()),
+});
+
+/**
+ * Bulk upsert credit card liabilities.
+ * Creates or updates by accountId in a single mutation.
+ * Uses safe upsert pattern to handle TOCTOU race conditions.
+ */
+export const bulkUpsertCreditCardLiabilities = internalMutation({
+  args: {
+    userId: v.string(),
+    plaidItemId: v.string(),
+    creditCards: v.array(creditCardLiabilityValidator),
+  },
+  returns: v.object({
+    created: v.number(),
+    updated: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let created = 0;
+    let updated = 0;
+
+    for (const card of args.creditCards) {
+      const result = await safeUpsertWithDedup(
+        ctx,
+        // Query for existing record
+        () =>
+          ctx.db
+            .query("plaidCreditCardLiabilities")
+            .withIndex("by_account", (q) => q.eq("accountId", card.accountId))
+            .first(),
+        // Query for ALL matching records (for duplicate detection)
+        () =>
+          ctx.db
+            .query("plaidCreditCardLiabilities")
+            .withIndex("by_account", (q) => q.eq("accountId", card.accountId))
+            .collect(),
+        // Insert function
+        async () => {
+          const id = await ctx.db.insert("plaidCreditCardLiabilities", {
+            userId: args.userId,
+            plaidItemId: args.plaidItemId,
+            accountId: card.accountId,
+            aprs: card.aprs,
+            isOverdue: card.isOverdue,
+            lastPaymentAmount: card.lastPaymentAmount,
+            lastPaymentDate: card.lastPaymentDate,
+            lastStatementBalance: card.lastStatementBalance,
+            lastStatementIssueDate: card.lastStatementIssueDate,
+            minimumPaymentAmount: card.minimumPaymentAmount,
+            nextPaymentDueDate: card.nextPaymentDueDate,
+            createdAt: now,
+            updatedAt: now,
+          });
+          return String(id);
+        },
+        // Update function
+        async (id) => {
+          await ctx.db.patch(id, {
+            aprs: card.aprs,
+            isOverdue: card.isOverdue,
+            lastPaymentAmount: card.lastPaymentAmount,
+            lastPaymentDate: card.lastPaymentDate,
+            lastStatementBalance: card.lastStatementBalance,
+            lastStatementIssueDate: card.lastStatementIssueDate,
+            minimumPaymentAmount: card.minimumPaymentAmount,
+            nextPaymentDueDate: card.nextPaymentDueDate,
+            updatedAt: now,
+          });
+        }
+      );
+
+      if (result.created) {
+        created++;
+      } else {
+        updated++;
+      }
     }
+
+    return { created, updated };
   },
 });
 
@@ -900,6 +1105,9 @@ export const getItemsNeedingSync = internalQuery({
 /**
  * Bulk upsert recurring streams.
  * Creates or updates by streamId.
+ *
+ * Uses safe upsert pattern to handle TOCTOU race conditions where
+ * concurrent calls might both try to insert the same stream.
  */
 export const bulkUpsertRecurringStreams = internalMutation({
   args: {
@@ -917,52 +1125,70 @@ export const bulkUpsertRecurringStreams = internalMutation({
     let updated = 0;
 
     for (const stream of args.streams) {
-      const existing = await ctx.db
-        .query("plaidRecurringStreams")
-        .withIndex("by_stream_id", (q) => q.eq("streamId", stream.streamId))
-        .first();
+      const result = await safeUpsertWithDedup(
+        ctx,
+        // Query for existing record
+        () =>
+          ctx.db
+            .query("plaidRecurringStreams")
+            .withIndex("by_stream_id", (q) => q.eq("streamId", stream.streamId))
+            .first(),
+        // Query for ALL matching records (for duplicate detection)
+        () =>
+          ctx.db
+            .query("plaidRecurringStreams")
+            .withIndex("by_stream_id", (q) => q.eq("streamId", stream.streamId))
+            .collect(),
+        // Insert function
+        async () => {
+          const id = await ctx.db.insert("plaidRecurringStreams", {
+            userId: args.userId,
+            plaidItemId: args.plaidItemId,
+            streamId: stream.streamId,
+            accountId: stream.accountId,
+            description: stream.description,
+            merchantName: stream.merchantName,
+            averageAmount: stream.averageAmount,
+            lastAmount: stream.lastAmount,
+            isoCurrencyCode: stream.isoCurrencyCode,
+            frequency: stream.frequency,
+            status: stream.status,
+            isActive: stream.isActive,
+            type: stream.type,
+            category: stream.category,
+            firstDate: stream.firstDate,
+            lastDate: stream.lastDate,
+            predictedNextDate: stream.predictedNextDate,
+            createdAt: now,
+            updatedAt: now,
+          });
+          return String(id);
+        },
+        // Update function
+        async (id) => {
+          await ctx.db.patch(id, {
+            description: stream.description,
+            merchantName: stream.merchantName,
+            averageAmount: stream.averageAmount,
+            lastAmount: stream.lastAmount,
+            isoCurrencyCode: stream.isoCurrencyCode,
+            frequency: stream.frequency,
+            status: stream.status,
+            isActive: stream.isActive,
+            type: stream.type,
+            category: stream.category,
+            firstDate: stream.firstDate,
+            lastDate: stream.lastDate,
+            predictedNextDate: stream.predictedNextDate,
+            updatedAt: now,
+          });
+        }
+      );
 
-      if (existing) {
-        await ctx.db.patch(existing._id, {
-          description: stream.description,
-          merchantName: stream.merchantName,
-          averageAmount: stream.averageAmount,
-          lastAmount: stream.lastAmount,
-          isoCurrencyCode: stream.isoCurrencyCode,
-          frequency: stream.frequency,
-          status: stream.status,
-          isActive: stream.isActive,
-          type: stream.type,
-          category: stream.category,
-          firstDate: stream.firstDate,
-          lastDate: stream.lastDate,
-          predictedNextDate: stream.predictedNextDate,
-          updatedAt: now,
-        });
-        updated++;
-      } else {
-        await ctx.db.insert("plaidRecurringStreams", {
-          userId: args.userId,
-          plaidItemId: args.plaidItemId,
-          streamId: stream.streamId,
-          accountId: stream.accountId,
-          description: stream.description,
-          merchantName: stream.merchantName,
-          averageAmount: stream.averageAmount,
-          lastAmount: stream.lastAmount,
-          isoCurrencyCode: stream.isoCurrencyCode,
-          frequency: stream.frequency,
-          status: stream.status,
-          isActive: stream.isActive,
-          type: stream.type,
-          category: stream.category,
-          firstDate: stream.firstDate,
-          lastDate: stream.lastDate,
-          predictedNextDate: stream.predictedNextDate,
-          createdAt: now,
-          updatedAt: now,
-        });
+      if (result.created) {
         created++;
+      } else {
+        updated++;
       }
     }
 
@@ -1018,6 +1244,9 @@ const addressValidator = v.object({
 
 /**
  * Upsert mortgage liability by accountId.
+ *
+ * Uses safe upsert pattern to handle TOCTOU race conditions where
+ * concurrent calls might both try to insert the same liability.
  */
 export const upsertMortgageLiability = internalMutation({
   args: {
@@ -1049,26 +1278,129 @@ export const upsertMortgageLiability = internalMutation({
   handler: async (ctx, args) => {
     const now = Date.now();
 
-    const existing = await ctx.db
-      .query("plaidMortgageLiabilities")
-      .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
-      .first();
+    const result = await safeUpsertWithDedup(
+      ctx,
+      // Query for existing record
+      () =>
+        ctx.db
+          .query("plaidMortgageLiabilities")
+          .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+          .first(),
+      // Query for ALL matching records (for duplicate detection)
+      () =>
+        ctx.db
+          .query("plaidMortgageLiabilities")
+          .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+          .collect(),
+      // Insert function
+      async () => {
+        const id = await ctx.db.insert("plaidMortgageLiabilities", {
+          ...args,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return String(id);
+      },
+      // Update function
+      async (id) => {
+        await ctx.db.patch(id, {
+          ...args,
+          updatedAt: now,
+        });
+      }
+    );
 
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        ...args,
-        updatedAt: now,
-      });
-      return String(existing._id);
+    return result.id;
+  },
+});
+
+const mortgageLiabilityValidator = v.object({
+  accountId: v.string(),
+  accountNumber: v.optional(v.string()),
+  loanTerm: v.optional(v.string()),
+  loanTypeDescription: v.optional(v.string()),
+  originationDate: v.optional(v.string()),
+  maturityDate: v.optional(v.string()),
+  interestRatePercentage: v.number(),
+  interestRateType: v.optional(v.string()),
+  lastPaymentAmount: v.optional(v.number()),
+  lastPaymentDate: v.optional(v.string()),
+  nextMonthlyPayment: v.optional(v.number()),
+  nextPaymentDueDate: v.optional(v.string()),
+  originationPrincipalAmount: v.optional(v.number()),
+  currentLateFee: v.optional(v.number()),
+  escrowBalance: v.optional(v.number()),
+  pastDueAmount: v.optional(v.number()),
+  ytdInterestPaid: v.optional(v.number()),
+  ytdPrincipalPaid: v.optional(v.number()),
+  hasPmi: v.optional(v.boolean()),
+  hasPrepaymentPenalty: v.optional(v.boolean()),
+  propertyAddress: v.optional(addressValidator),
+});
+
+/**
+ * Bulk upsert mortgage liabilities.
+ * Creates or updates by accountId in a single mutation.
+ * Uses safe upsert pattern to handle TOCTOU race conditions.
+ */
+export const bulkUpsertMortgageLiabilities = internalMutation({
+  args: {
+    userId: v.string(),
+    plaidItemId: v.string(),
+    mortgages: v.array(mortgageLiabilityValidator),
+  },
+  returns: v.object({
+    created: v.number(),
+    updated: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let created = 0;
+    let updated = 0;
+
+    for (const mortgage of args.mortgages) {
+      const result = await safeUpsertWithDedup(
+        ctx,
+        // Query for existing record
+        () =>
+          ctx.db
+            .query("plaidMortgageLiabilities")
+            .withIndex("by_account", (q) => q.eq("accountId", mortgage.accountId))
+            .first(),
+        // Query for ALL matching records (for duplicate detection)
+        () =>
+          ctx.db
+            .query("plaidMortgageLiabilities")
+            .withIndex("by_account", (q) => q.eq("accountId", mortgage.accountId))
+            .collect(),
+        // Insert function
+        async () => {
+          const id = await ctx.db.insert("plaidMortgageLiabilities", {
+            userId: args.userId,
+            plaidItemId: args.plaidItemId,
+            ...mortgage,
+            createdAt: now,
+            updatedAt: now,
+          });
+          return String(id);
+        },
+        // Update function
+        async (id) => {
+          await ctx.db.patch(id, {
+            ...mortgage,
+            updatedAt: now,
+          });
+        }
+      );
+
+      if (result.created) {
+        created++;
+      } else {
+        updated++;
+      }
     }
 
-    const id = await ctx.db.insert("plaidMortgageLiabilities", {
-      ...args,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    return String(id);
+    return { created, updated };
   },
 });
 
@@ -1088,6 +1420,9 @@ const repaymentPlanValidator = v.object({
 
 /**
  * Upsert student loan liability by accountId.
+ *
+ * Uses safe upsert pattern to handle TOCTOU race conditions where
+ * concurrent calls might both try to insert the same liability.
  */
 export const upsertStudentLoanLiability = internalMutation({
   args: {
@@ -1122,26 +1457,132 @@ export const upsertStudentLoanLiability = internalMutation({
   handler: async (ctx, args) => {
     const now = Date.now();
 
-    const existing = await ctx.db
-      .query("plaidStudentLoanLiabilities")
-      .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
-      .first();
+    const result = await safeUpsertWithDedup(
+      ctx,
+      // Query for existing record
+      () =>
+        ctx.db
+          .query("plaidStudentLoanLiabilities")
+          .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+          .first(),
+      // Query for ALL matching records (for duplicate detection)
+      () =>
+        ctx.db
+          .query("plaidStudentLoanLiabilities")
+          .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
+          .collect(),
+      // Insert function
+      async () => {
+        const id = await ctx.db.insert("plaidStudentLoanLiabilities", {
+          ...args,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return String(id);
+      },
+      // Update function
+      async (id) => {
+        await ctx.db.patch(id, {
+          ...args,
+          updatedAt: now,
+        });
+      }
+    );
 
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        ...args,
-        updatedAt: now,
-      });
-      return String(existing._id);
+    return result.id;
+  },
+});
+
+const studentLoanLiabilityValidator = v.object({
+  accountId: v.string(),
+  accountNumber: v.optional(v.string()),
+  loanName: v.optional(v.string()),
+  guarantor: v.optional(v.string()),
+  sequenceNumber: v.optional(v.string()),
+  disbursementDates: v.optional(v.array(v.string())),
+  originationDate: v.optional(v.string()),
+  expectedPayoffDate: v.optional(v.string()),
+  lastStatementIssueDate: v.optional(v.string()),
+  interestRatePercentage: v.number(),
+  lastPaymentAmount: v.optional(v.number()),
+  lastPaymentDate: v.optional(v.string()),
+  minimumPaymentAmount: v.optional(v.number()),
+  nextPaymentDueDate: v.optional(v.string()),
+  paymentReferenceNumber: v.optional(v.string()),
+  originationPrincipalAmount: v.optional(v.number()),
+  outstandingInterestAmount: v.optional(v.number()),
+  lastStatementBalance: v.optional(v.number()),
+  ytdInterestPaid: v.optional(v.number()),
+  ytdPrincipalPaid: v.optional(v.number()),
+  isOverdue: v.optional(v.boolean()),
+  loanStatus: v.optional(loanStatusValidator),
+  repaymentPlan: v.optional(repaymentPlanValidator),
+  servicerAddress: v.optional(addressValidator),
+});
+
+/**
+ * Bulk upsert student loan liabilities.
+ * Creates or updates by accountId in a single mutation.
+ * Uses safe upsert pattern to handle TOCTOU race conditions.
+ */
+export const bulkUpsertStudentLoanLiabilities = internalMutation({
+  args: {
+    userId: v.string(),
+    plaidItemId: v.string(),
+    studentLoans: v.array(studentLoanLiabilityValidator),
+  },
+  returns: v.object({
+    created: v.number(),
+    updated: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let created = 0;
+    let updated = 0;
+
+    for (const loan of args.studentLoans) {
+      const result = await safeUpsertWithDedup(
+        ctx,
+        // Query for existing record
+        () =>
+          ctx.db
+            .query("plaidStudentLoanLiabilities")
+            .withIndex("by_account", (q) => q.eq("accountId", loan.accountId))
+            .first(),
+        // Query for ALL matching records (for duplicate detection)
+        () =>
+          ctx.db
+            .query("plaidStudentLoanLiabilities")
+            .withIndex("by_account", (q) => q.eq("accountId", loan.accountId))
+            .collect(),
+        // Insert function
+        async () => {
+          const id = await ctx.db.insert("plaidStudentLoanLiabilities", {
+            userId: args.userId,
+            plaidItemId: args.plaidItemId,
+            ...loan,
+            createdAt: now,
+            updatedAt: now,
+          });
+          return String(id);
+        },
+        // Update function
+        async (id) => {
+          await ctx.db.patch(id, {
+            ...loan,
+            updatedAt: now,
+          });
+        }
+      );
+
+      if (result.created) {
+        created++;
+      } else {
+        updated++;
+      }
     }
 
-    const id = await ctx.db.insert("plaidStudentLoanLiabilities", {
-      ...args,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    return String(id);
+    return { created, updated };
   },
 });
 
@@ -1160,6 +1601,9 @@ const confidenceLevelValidator = v.union(
 /**
  * Upsert merchant enrichment by merchantId.
  * Shared across all users.
+ *
+ * Uses safe upsert pattern to handle TOCTOU race conditions where
+ * concurrent calls might both try to insert the same merchant enrichment.
  */
 export const upsertMerchantEnrichment = internalMutation({
   args: {
@@ -1175,25 +1619,40 @@ export const upsertMerchantEnrichment = internalMutation({
   },
   returns: v.string(),
   handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("merchantEnrichments")
-      .withIndex("by_merchant", (q) => q.eq("merchantId", args.merchantId))
-      .first();
+    const now = Date.now();
 
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        ...args,
-        lastEnriched: Date.now(),
-      });
-      return String(existing._id);
-    }
+    const result = await safeUpsertWithDedup(
+      ctx,
+      // Query for existing record
+      () =>
+        ctx.db
+          .query("merchantEnrichments")
+          .withIndex("by_merchant", (q) => q.eq("merchantId", args.merchantId))
+          .first(),
+      // Query for ALL matching records (for duplicate detection)
+      () =>
+        ctx.db
+          .query("merchantEnrichments")
+          .withIndex("by_merchant", (q) => q.eq("merchantId", args.merchantId))
+          .collect(),
+      // Insert function
+      async () => {
+        const id = await ctx.db.insert("merchantEnrichments", {
+          ...args,
+          lastEnriched: now,
+        });
+        return String(id);
+      },
+      // Update function
+      async (id) => {
+        await ctx.db.patch(id, {
+          ...args,
+          lastEnriched: now,
+        });
+      }
+    );
 
-    const id = await ctx.db.insert("merchantEnrichments", {
-      ...args,
-      lastEnriched: Date.now(),
-    });
-
-    return String(id);
+    return result.id;
   },
 });
 

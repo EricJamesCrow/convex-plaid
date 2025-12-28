@@ -186,6 +186,13 @@ export interface OnboardItemResult {
   accounts: FetchAccountsResult;
   transactions: SyncTransactionsResult;
   liabilities: FetchLiabilitiesResult;
+  /** Recurring streams result if successful */
+  recurringStreams?: FetchRecurringStreamsResult;
+  /** Errors that occurred during onboarding (non-fatal) */
+  errors?: {
+    /** Error message if recurring streams fetch failed */
+    recurringStreams?: string;
+  };
 }
 
 /**

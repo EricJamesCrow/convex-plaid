@@ -489,172 +489,178 @@ export const fetchLiabilities = action({
       `[Plaid Component] Fetched ${creditCards.length} credit cards, ${mortgages.length} mortgages, ${studentLoans.length} student loans`
     );
 
-    // Upsert credit card liabilities
-    for (const card of creditCards) {
-      await ctx.runMutation(internal.private.upsertCreditCardLiability, {
+    // Bulk upsert credit card liabilities (single mutation instead of N sequential mutations)
+    if (creditCards.length > 0) {
+      await ctx.runMutation(internal.private.bulkUpsertCreditCardLiabilities, {
         userId: item.userId,
         plaidItemId: args.plaidItemId,
-        accountId: card.account_id ?? "",
-        aprs: card.aprs.map((apr) => ({
-          aprPercentage: apr.apr_percentage ?? 0,
-          aprType: apr.apr_type ?? "",
-          balanceSubjectToApr:
-            apr.balance_subject_to_apr != null
-              ? convertAmountToMilliunits(apr.balance_subject_to_apr)
+        creditCards: creditCards.map((card) => ({
+          accountId: card.account_id ?? "",
+          aprs: card.aprs.map((apr) => ({
+            aprPercentage: apr.apr_percentage ?? 0,
+            aprType: apr.apr_type ?? "",
+            balanceSubjectToApr:
+              apr.balance_subject_to_apr != null
+                ? convertAmountToMilliunits(apr.balance_subject_to_apr)
+                : undefined,
+            interestChargeAmount:
+              apr.interest_charge_amount != null
+                ? convertAmountToMilliunits(apr.interest_charge_amount)
+                : undefined,
+          })),
+          isOverdue: card.is_overdue ?? false,
+          lastPaymentAmount:
+            card.last_payment_amount != null
+              ? convertAmountToMilliunits(card.last_payment_amount)
               : undefined,
-          interestChargeAmount:
-            apr.interest_charge_amount != null
-              ? convertAmountToMilliunits(apr.interest_charge_amount)
+          lastPaymentDate: card.last_payment_date ?? undefined,
+          lastStatementBalance:
+            card.last_statement_balance != null
+              ? convertAmountToMilliunits(card.last_statement_balance)
               : undefined,
+          lastStatementIssueDate: card.last_statement_issue_date ?? undefined,
+          minimumPaymentAmount:
+            card.minimum_payment_amount != null
+              ? convertAmountToMilliunits(card.minimum_payment_amount)
+              : undefined,
+          nextPaymentDueDate: card.next_payment_due_date ?? undefined,
         })),
-        isOverdue: card.is_overdue ?? false,
-        lastPaymentAmount:
-          card.last_payment_amount != null
-            ? convertAmountToMilliunits(card.last_payment_amount)
-            : undefined,
-        lastPaymentDate: card.last_payment_date ?? undefined,
-        lastStatementBalance:
-          card.last_statement_balance != null
-            ? convertAmountToMilliunits(card.last_statement_balance)
-            : undefined,
-        lastStatementIssueDate: card.last_statement_issue_date ?? undefined,
-        minimumPaymentAmount:
-          card.minimum_payment_amount != null
-            ? convertAmountToMilliunits(card.minimum_payment_amount)
-            : undefined,
-        nextPaymentDueDate: card.next_payment_due_date ?? undefined,
       });
     }
 
-    // Upsert mortgage liabilities
-    for (const mortgage of mortgages) {
-      await ctx.runMutation(internal.private.upsertMortgageLiability, {
+    // Bulk upsert mortgage liabilities (single mutation instead of N sequential mutations)
+    if (mortgages.length > 0) {
+      await ctx.runMutation(internal.private.bulkUpsertMortgageLiabilities, {
         userId: item.userId,
         plaidItemId: args.plaidItemId,
-        accountId: mortgage.account_id ?? "",
-        accountNumber: mortgage.account_number ?? undefined,
-        loanTerm: mortgage.loan_term ?? undefined,
-        loanTypeDescription: mortgage.loan_type_description ?? undefined,
-        originationDate: mortgage.origination_date ?? undefined,
-        maturityDate: mortgage.maturity_date ?? undefined,
-        interestRatePercentage: mortgage.interest_rate?.percentage ?? 0,
-        interestRateType: mortgage.interest_rate?.type ?? undefined,
-        lastPaymentAmount:
-          mortgage.last_payment_amount != null
-            ? convertAmountToMilliunits(mortgage.last_payment_amount)
+        mortgages: mortgages.map((mortgage) => ({
+          accountId: mortgage.account_id ?? "",
+          accountNumber: mortgage.account_number ?? undefined,
+          loanTerm: mortgage.loan_term ?? undefined,
+          loanTypeDescription: mortgage.loan_type_description ?? undefined,
+          originationDate: mortgage.origination_date ?? undefined,
+          maturityDate: mortgage.maturity_date ?? undefined,
+          interestRatePercentage: mortgage.interest_rate?.percentage ?? 0,
+          interestRateType: mortgage.interest_rate?.type ?? undefined,
+          lastPaymentAmount:
+            mortgage.last_payment_amount != null
+              ? convertAmountToMilliunits(mortgage.last_payment_amount)
+              : undefined,
+          lastPaymentDate: mortgage.last_payment_date ?? undefined,
+          nextMonthlyPayment:
+            mortgage.next_monthly_payment != null
+              ? convertAmountToMilliunits(mortgage.next_monthly_payment)
+              : undefined,
+          nextPaymentDueDate: mortgage.next_payment_due_date ?? undefined,
+          originationPrincipalAmount:
+            mortgage.origination_principal_amount != null
+              ? convertAmountToMilliunits(mortgage.origination_principal_amount)
+              : undefined,
+          currentLateFee:
+            mortgage.current_late_fee != null
+              ? convertAmountToMilliunits(mortgage.current_late_fee)
+              : undefined,
+          escrowBalance:
+            mortgage.escrow_balance != null
+              ? convertAmountToMilliunits(mortgage.escrow_balance)
+              : undefined,
+          pastDueAmount:
+            mortgage.past_due_amount != null
+              ? convertAmountToMilliunits(mortgage.past_due_amount)
+              : undefined,
+          ytdInterestPaid:
+            mortgage.ytd_interest_paid != null
+              ? convertAmountToMilliunits(mortgage.ytd_interest_paid)
+              : undefined,
+          ytdPrincipalPaid:
+            mortgage.ytd_principal_paid != null
+              ? convertAmountToMilliunits(mortgage.ytd_principal_paid)
+              : undefined,
+          hasPmi: mortgage.has_pmi ?? undefined,
+          hasPrepaymentPenalty: mortgage.has_prepayment_penalty ?? undefined,
+          propertyAddress: mortgage.property_address
+            ? {
+                street: mortgage.property_address.street ?? undefined,
+                city: mortgage.property_address.city ?? undefined,
+                region: mortgage.property_address.region ?? undefined,
+                postalCode: mortgage.property_address.postal_code ?? undefined,
+                country: mortgage.property_address.country ?? undefined,
+              }
             : undefined,
-        lastPaymentDate: mortgage.last_payment_date ?? undefined,
-        nextMonthlyPayment:
-          mortgage.next_monthly_payment != null
-            ? convertAmountToMilliunits(mortgage.next_monthly_payment)
-            : undefined,
-        nextPaymentDueDate: mortgage.next_payment_due_date ?? undefined,
-        originationPrincipalAmount:
-          mortgage.origination_principal_amount != null
-            ? convertAmountToMilliunits(mortgage.origination_principal_amount)
-            : undefined,
-        currentLateFee:
-          mortgage.current_late_fee != null
-            ? convertAmountToMilliunits(mortgage.current_late_fee)
-            : undefined,
-        escrowBalance:
-          mortgage.escrow_balance != null
-            ? convertAmountToMilliunits(mortgage.escrow_balance)
-            : undefined,
-        pastDueAmount:
-          mortgage.past_due_amount != null
-            ? convertAmountToMilliunits(mortgage.past_due_amount)
-            : undefined,
-        ytdInterestPaid:
-          mortgage.ytd_interest_paid != null
-            ? convertAmountToMilliunits(mortgage.ytd_interest_paid)
-            : undefined,
-        ytdPrincipalPaid:
-          mortgage.ytd_principal_paid != null
-            ? convertAmountToMilliunits(mortgage.ytd_principal_paid)
-            : undefined,
-        hasPmi: mortgage.has_pmi ?? undefined,
-        hasPrepaymentPenalty: mortgage.has_prepayment_penalty ?? undefined,
-        propertyAddress: mortgage.property_address
-          ? {
-              street: mortgage.property_address.street ?? undefined,
-              city: mortgage.property_address.city ?? undefined,
-              region: mortgage.property_address.region ?? undefined,
-              postalCode: mortgage.property_address.postal_code ?? undefined,
-              country: mortgage.property_address.country ?? undefined,
-            }
-          : undefined,
+        })),
       });
     }
 
-    // Upsert student loan liabilities
-    for (const loan of studentLoans) {
-      await ctx.runMutation(internal.private.upsertStudentLoanLiability, {
+    // Bulk upsert student loan liabilities (single mutation instead of N sequential mutations)
+    if (studentLoans.length > 0) {
+      await ctx.runMutation(internal.private.bulkUpsertStudentLoanLiabilities, {
         userId: item.userId,
         plaidItemId: args.plaidItemId,
-        accountId: loan.account_id ?? "",
-        accountNumber: loan.account_number ?? undefined,
-        loanName: loan.loan_name ?? undefined,
-        guarantor: loan.guarantor ?? undefined,
-        sequenceNumber: loan.sequence_number ?? undefined,
-        disbursementDates: loan.disbursement_dates ?? undefined,
-        originationDate: loan.origination_date ?? undefined,
-        expectedPayoffDate: loan.expected_payoff_date ?? undefined,
-        lastStatementIssueDate: loan.last_statement_issue_date ?? undefined,
-        interestRatePercentage: loan.interest_rate_percentage ?? 0,
-        lastPaymentAmount:
-          loan.last_payment_amount != null
-            ? convertAmountToMilliunits(loan.last_payment_amount)
+        studentLoans: studentLoans.map((loan) => ({
+          accountId: loan.account_id ?? "",
+          accountNumber: loan.account_number ?? undefined,
+          loanName: loan.loan_name ?? undefined,
+          guarantor: loan.guarantor ?? undefined,
+          sequenceNumber: loan.sequence_number ?? undefined,
+          disbursementDates: loan.disbursement_dates ?? undefined,
+          originationDate: loan.origination_date ?? undefined,
+          expectedPayoffDate: loan.expected_payoff_date ?? undefined,
+          lastStatementIssueDate: loan.last_statement_issue_date ?? undefined,
+          interestRatePercentage: loan.interest_rate_percentage ?? 0,
+          lastPaymentAmount:
+            loan.last_payment_amount != null
+              ? convertAmountToMilliunits(loan.last_payment_amount)
+              : undefined,
+          lastPaymentDate: loan.last_payment_date ?? undefined,
+          minimumPaymentAmount:
+            loan.minimum_payment_amount != null
+              ? convertAmountToMilliunits(loan.minimum_payment_amount)
+              : undefined,
+          nextPaymentDueDate: loan.next_payment_due_date ?? undefined,
+          paymentReferenceNumber: loan.payment_reference_number ?? undefined,
+          originationPrincipalAmount:
+            loan.origination_principal_amount != null
+              ? convertAmountToMilliunits(loan.origination_principal_amount)
+              : undefined,
+          outstandingInterestAmount:
+            loan.outstanding_interest_amount != null
+              ? convertAmountToMilliunits(loan.outstanding_interest_amount)
+              : undefined,
+          lastStatementBalance:
+            (loan as any).last_statement_balance != null
+              ? convertAmountToMilliunits((loan as any).last_statement_balance)
+              : undefined,
+          ytdInterestPaid:
+            loan.ytd_interest_paid != null
+              ? convertAmountToMilliunits(loan.ytd_interest_paid)
+              : undefined,
+          ytdPrincipalPaid:
+            loan.ytd_principal_paid != null
+              ? convertAmountToMilliunits(loan.ytd_principal_paid)
+              : undefined,
+          isOverdue: loan.is_overdue ?? undefined,
+          loanStatus: loan.loan_status
+            ? {
+                type: loan.loan_status.type ?? undefined,
+                endDate: loan.loan_status.end_date ?? undefined,
+              }
             : undefined,
-        lastPaymentDate: loan.last_payment_date ?? undefined,
-        minimumPaymentAmount:
-          loan.minimum_payment_amount != null
-            ? convertAmountToMilliunits(loan.minimum_payment_amount)
+          repaymentPlan: loan.repayment_plan
+            ? {
+                type: loan.repayment_plan.type ?? undefined,
+                description: loan.repayment_plan.description ?? undefined,
+              }
             : undefined,
-        nextPaymentDueDate: loan.next_payment_due_date ?? undefined,
-        paymentReferenceNumber: loan.payment_reference_number ?? undefined,
-        originationPrincipalAmount:
-          loan.origination_principal_amount != null
-            ? convertAmountToMilliunits(loan.origination_principal_amount)
+          servicerAddress: loan.servicer_address
+            ? {
+                street: loan.servicer_address.street ?? undefined,
+                city: loan.servicer_address.city ?? undefined,
+                region: loan.servicer_address.region ?? undefined,
+                postalCode: loan.servicer_address.postal_code ?? undefined,
+                country: loan.servicer_address.country ?? undefined,
+              }
             : undefined,
-        outstandingInterestAmount:
-          loan.outstanding_interest_amount != null
-            ? convertAmountToMilliunits(loan.outstanding_interest_amount)
-            : undefined,
-        lastStatementBalance:
-          (loan as any).last_statement_balance != null
-            ? convertAmountToMilliunits((loan as any).last_statement_balance)
-            : undefined,
-        ytdInterestPaid:
-          loan.ytd_interest_paid != null
-            ? convertAmountToMilliunits(loan.ytd_interest_paid)
-            : undefined,
-        ytdPrincipalPaid:
-          loan.ytd_principal_paid != null
-            ? convertAmountToMilliunits(loan.ytd_principal_paid)
-            : undefined,
-        isOverdue: loan.is_overdue ?? undefined,
-        loanStatus: loan.loan_status
-          ? {
-              type: loan.loan_status.type ?? undefined,
-              endDate: loan.loan_status.end_date ?? undefined,
-            }
-          : undefined,
-        repaymentPlan: loan.repayment_plan
-          ? {
-              type: loan.repayment_plan.type ?? undefined,
-              description: loan.repayment_plan.description ?? undefined,
-            }
-          : undefined,
-        servicerAddress: loan.servicer_address
-          ? {
-              street: loan.servicer_address.street ?? undefined,
-              city: loan.servicer_address.city ?? undefined,
-              region: loan.servicer_address.region ?? undefined,
-              postalCode: loan.servicer_address.postal_code ?? undefined,
-              country: loan.servicer_address.country ?? undefined,
-            }
-          : undefined,
+        })),
       });
     }
 
