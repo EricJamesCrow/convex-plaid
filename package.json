@@ -1,14 +1,14 @@
 {
   "name": "@ericjamescrow/convex-plaid",
   "description": "A Plaid component for Convex - bank accounts, transactions, and liabilities.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/EricJamesCrow/convex-plaid.git"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "access": "public"
   },
   "keywords": [
     "convex",
