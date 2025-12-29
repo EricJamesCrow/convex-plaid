@@ -111,6 +111,7 @@ export const exchangePublicToken = action({
   args: {
     publicToken: v.string(),
     userId: v.string(),
+    products: v.optional(v.array(v.string())), // Products used for this connection
     ...plaidConfigArgs,
   },
   returns: v.object({
@@ -179,12 +180,15 @@ export const exchangePublicToken = action({
     const encryptedToken = await encryptToken(accessToken, args.encryptionKey);
 
     // Create plaidItem in component database
+    // products defaults to ["transactions"] if not specified
     const plaidItemId = await ctx.runMutation(internal.private.createPlaidItem, {
       userId: args.userId,
       itemId,
       accessToken: encryptedToken,
       institutionId,
       institutionName,
+      products: args.products ?? ["transactions"],
+      isActive: true, // Default to active when created
       status: "pending",
     });
 

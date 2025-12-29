@@ -13,21 +13,32 @@ import { Plaid } from "@ericjamescrow/convex-plaid";
 import { components } from "./_generated/api";
 
 // =============================================================================
-// INITIALIZE PLAID CLIENT
+// INITIALIZE PLAID CLIENT (LAZY)
 // =============================================================================
 
 /**
- * Initialize the Plaid component client with configuration.
+ * Lazy-initialized Plaid component instance.
+ *
+ * IMPORTANT: Environment variables are only available at runtime, not during
+ * code bundling. We use lazy initialization to defer config validation until
+ * the first action is called.
  *
  * All secrets must be provided explicitly - components cannot access process.env.
  * In production, use environment variables from your deployment.
  */
-const plaid = new Plaid(components.plaid, {
-  PLAID_CLIENT_ID: process.env.PLAID_CLIENT_ID!,
-  PLAID_SECRET: process.env.PLAID_SECRET!,
-  PLAID_ENV: process.env.PLAID_ENV ?? "sandbox",
-  ENCRYPTION_KEY: process.env.ENCRYPTION_KEY!,
-});
+let _plaid: Plaid | null = null;
+
+function getPlaid(): Plaid {
+  if (!_plaid) {
+    _plaid = new Plaid(components.plaid, {
+      PLAID_CLIENT_ID: process.env.PLAID_CLIENT_ID!,
+      PLAID_SECRET: process.env.PLAID_SECRET!,
+      PLAID_ENV: process.env.PLAID_ENV ?? "sandbox",
+      ENCRYPTION_KEY: process.env.ENCRYPTION_KEY!,
+    });
+  }
+  return _plaid;
+}
 
 // =============================================================================
 // AUTHENTICATED ACTIONS
@@ -51,7 +62,7 @@ export const createLinkToken = action({
 
     const userId = identity.subject;
 
-    return await plaid.createLinkToken(ctx, {
+    return await getPlaid().createLinkToken(ctx, {
       userId,
       products: args.products,
       clientName: "SmartPockets",
@@ -78,13 +89,13 @@ export const exchangePublicToken = action({
     const userId = identity.subject;
 
     // Exchange token and create plaidItem
-    const result = await plaid.exchangePublicToken(ctx, {
+    const result = await getPlaid().exchangePublicToken(ctx, {
       publicToken: args.publicToken,
       userId,
     });
 
     // Automatically onboard the item (fetch accounts, transactions, liabilities)
-    await plaid.onboardItem(ctx, {
+    await getPlaid().onboardItem(ctx, {
       plaidItemId: result.plaidItemId,
     });
 
@@ -111,7 +122,7 @@ export const syncTransactions = action({
     //   throw new Error("Not authorized");
     // }
 
-    return await plaid.syncTransactions(ctx, {
+    return await getPlaid().syncTransactions(ctx, {
       plaidItemId: args.plaidItemId,
     });
   },
@@ -130,7 +141,7 @@ export const refreshLiabilities = action({
       throw new Error("Not authenticated");
     }
 
-    return await plaid.fetchLiabilities(ctx, {
+    return await getPlaid().fetchLiabilities(ctx, {
       plaidItemId: args.plaidItemId,
     });
   },
@@ -151,7 +162,7 @@ export const getMyItems = query({
       return [];
     }
 
-    return await ctx.runQuery(plaid.api.getItemsByUser, {
+    return await ctx.runQuery(getPlaid().api.getItemsByUser, {
       userId: identity.subject,
     });
   },
@@ -168,7 +179,7 @@ export const getMyAccounts = query({
       return [];
     }
 
-    return await ctx.runQuery(plaid.api.getAccountsByUser, {
+    return await ctx.runQuery(getPlaid().api.getAccountsByUser, {
       userId: identity.subject,
     });
   },
@@ -189,7 +200,7 @@ export const getMyTransactions = query({
       return [];
     }
 
-    return await ctx.runQuery(plaid.api.getTransactionsByUser, {
+    return await ctx.runQuery(getPlaid().api.getTransactionsByUser, {
       userId: identity.subject,
       startDate: args.startDate,
       endDate: args.endDate,
@@ -209,7 +220,7 @@ export const getMyLiabilities = query({
       return [];
     }
 
-    return await ctx.runQuery(plaid.api.getLiabilitiesByUser, {
+    return await ctx.runQuery(getPlaid().api.getLiabilitiesByUser, {
       userId: identity.subject,
     });
   },

@@ -49,5 +49,5 @@ export declare const internal: FilterApi<
 >;
 
 export declare const components: {
-  plaid: import("@smartpockets/convex-plaid/_generated/component.js").ComponentApi<"plaid">;
+  plaid: import("@ericjamescrow/convex-plaid/_generated/component.js").ComponentApi<"plaid">;
 };

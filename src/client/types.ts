@@ -286,6 +286,58 @@ export interface SyncStats {
 }
 
 // =============================================================================
+// PLAID ITEM TYPES
+// =============================================================================
+
+/**
+ * Status of a plaidItem connection.
+ */
+export type PlaidItemStatus =
+  | "pending"
+  | "syncing"
+  | "active"
+  | "error"
+  | "needs_reauth";
+
+/**
+ * Circuit breaker state for resilience.
+ */
+export type CircuitState = "closed" | "open" | "half_open";
+
+/**
+ * PlaidItem returned from queries (accessToken excluded for security).
+ */
+export interface PlaidItem {
+  _id: string;
+  userId: string;
+  itemId: string;
+  institutionId?: string;
+  institutionName?: string;
+  products: string[];
+  isActive?: boolean;
+  status: PlaidItemStatus;
+  syncError?: string;
+  createdAt: number;
+  lastSyncedAt?: number;
+  activatedAt?: number;
+  // Error tracking
+  errorCode?: string;
+  errorMessage?: string;
+  errorAt?: number;
+  // Re-auth tracking
+  reauthReason?: string;
+  reauthAt?: number;
+  // Disconnect tracking
+  disconnectedReason?: string;
+  disconnectedAt?: number;
+  // Circuit breaker state (for monitoring)
+  circuitState?: CircuitState;
+  consecutiveFailures?: number;
+  lastFailureAt?: number;
+  nextRetryAt?: number;
+}
+
+// =============================================================================
 // INSTITUTION TYPES
 // =============================================================================
 

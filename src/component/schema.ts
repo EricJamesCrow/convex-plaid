@@ -26,6 +26,8 @@ export default defineSchema({
     cursor: v.optional(v.string()), // For incremental /transactions/sync
     institutionId: v.optional(v.string()), // Bank/institution identifier
     institutionName: v.optional(v.string()), // Display name: "Chase", "Wells Fargo"
+    products: v.array(v.string()), // Plaid products enabled: ["transactions", "liabilities"]
+    isActive: v.optional(v.boolean()), // User toggle (default true) - allows pausing sync
     status: v.union(
       v.literal("pending"),
       v.literal("syncing"),
@@ -36,6 +38,20 @@ export default defineSchema({
     syncError: v.optional(v.string()), // Error message from last sync attempt
     createdAt: v.number(), // Unix timestamp
     lastSyncedAt: v.optional(v.number()), // Last successful sync timestamp
+    activatedAt: v.optional(v.number()), // When item was first activated (completed onboarding)
+
+    // Error tracking (from webhook ERROR events)
+    errorCode: v.optional(v.string()), // Plaid error code: "ITEM_LOGIN_REQUIRED"
+    errorMessage: v.optional(v.string()), // Human-readable error message
+    errorAt: v.optional(v.number()), // Timestamp when error occurred
+
+    // Re-auth tracking (for expired credentials)
+    reauthReason: v.optional(v.string()), // Why re-auth is needed
+    reauthAt: v.optional(v.number()), // When re-auth was marked as needed
+
+    // Disconnect tracking (for revoked access)
+    disconnectedReason: v.optional(v.string()), // Why item was disconnected
+    disconnectedAt: v.optional(v.number()), // When item was disconnected
 
     // Optimistic locking for transaction sync (prevents race conditions)
     syncVersion: v.optional(v.number()), // Incremented on each sync start

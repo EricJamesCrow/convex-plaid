@@ -24,6 +24,36 @@ A Convex component for integrating Plaid into your application - bank connection
 npm install @ericjamescrow/convex-plaid
 ```
 
+### 2. Initialize with CLI (Recommended)
+
+The easiest way to get started is using the CLI:
+
+```bash
+npx @ericjamescrow/convex-plaid init
+```
+
+This interactive command will:
+- Create `convex/convex.config.ts` (component registration)
+- Create `convex/plaid.ts` (wrapper actions with auth)
+- Create `convex/http.ts` (webhook routes)
+- Generate a secure encryption key
+- Create `.env.local.example` with placeholders
+
+**Options:**
+```bash
+npx @ericjamescrow/convex-plaid init -y          # Skip prompts, use defaults
+npx @ericjamescrow/convex-plaid init --auth custom  # Use custom auth (pass userId)
+npx @ericjamescrow/convex-plaid init --no-env    # Skip .env.local.example
+```
+
+After running `init`, skip to [Step 4](#4-set-up-environment-variables) to configure your environment variables.
+
+---
+
+### Manual Setup
+
+If you prefer manual setup, follow steps 2-5 below.
+
 ### 2. Register the Component
 
 Create or update `convex/convex.config.ts`:

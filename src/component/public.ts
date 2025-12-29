@@ -109,7 +109,7 @@ export const getItemsByUser = query({
 });
 
 /**
- * Get a single plaidItem by ID.
+ * Get a single plaidItem by component document ID.
  * NOTE: accessToken is excluded for security.
  */
 export const getItem = query({
@@ -150,6 +150,95 @@ export const getItem = query({
   },
 });
 
+/**
+ * Get a single plaidItem by Plaid's item_id.
+ * Used by webhook handlers to look up items by Plaid's identifier.
+ * NOTE: accessToken is excluded for security.
+ */
+export const getItemByPlaidItemId = query({
+  args: { itemId: v.string() },
+  returns: v.union(plaidItemReturnValidator, v.null()),
+  handler: async (ctx, args) => {
+    const item = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_item_id", (q) => q.eq("itemId", args.itemId))
+      .unique();
+
+    if (!item) return null;
+
+    return {
+      _id: String(item._id),
+      userId: item.userId,
+      itemId: item.itemId,
+      institutionId: item.institutionId,
+      institutionName: item.institutionName,
+      products: item.products,
+      isActive: item.isActive,
+      status: item.status,
+      syncError: item.syncError,
+      createdAt: item.createdAt,
+      lastSyncedAt: item.lastSyncedAt,
+      activatedAt: item.activatedAt,
+      errorCode: item.errorCode,
+      errorMessage: item.errorMessage,
+      errorAt: item.errorAt,
+      reauthReason: item.reauthReason,
+      reauthAt: item.reauthAt,
+      disconnectedReason: item.disconnectedReason,
+      disconnectedAt: item.disconnectedAt,
+      circuitState: item.circuitState,
+      consecutiveFailures: item.consecutiveFailures,
+      lastFailureAt: item.lastFailureAt,
+      nextRetryAt: item.nextRetryAt,
+    };
+  },
+});
+
+/**
+ * Get all active plaidItems across all users.
+ * Used by scheduled sync jobs to find items that need syncing.
+ * NOTE: accessToken is excluded for security.
+ */
+export const getAllActiveItems = query({
+  args: {},
+  returns: v.array(plaidItemReturnValidator),
+  handler: async (ctx) => {
+    const items = await ctx.db.query("plaidItems").collect();
+
+    // Filter to only active items (isActive === true or undefined for backward compat)
+    const activeItems = items.filter(
+      (item) => item.isActive === undefined || item.isActive === true
+    );
+
+    // Explicitly map fields to avoid complex type inference
+    return activeItems.map((item) => ({
+      _id: String(item._id),
+      userId: item.userId,
+      itemId: item.itemId,
+      institutionId: item.institutionId,
+      institutionName: item.institutionName,
+      products: item.products,
+      isActive: item.isActive,
+      status: item.status,
+      syncError: item.syncError,
+      createdAt: item.createdAt,
+      lastSyncedAt: item.lastSyncedAt,
+      activatedAt: item.activatedAt,
+      errorCode: item.errorCode,
+      errorMessage: item.errorMessage,
+      errorAt: item.errorAt,
+      reauthReason: item.reauthReason,
+      reauthAt: item.reauthAt,
+      disconnectedReason: item.disconnectedReason,
+      disconnectedAt: item.disconnectedAt,
+      circuitState: item.circuitState,
+      consecutiveFailures: item.consecutiveFailures,
+      lastFailureAt: item.lastFailureAt,
+      nextRetryAt: item.nextRetryAt,
+    }));
+  },
+});
+
 // =============================================================================
 // ACCOUNTS QUERIES
 // =============================================================================
@@ -180,9 +269,19 @@ export const getAccountsByUser = query({
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return accounts.map((acc) => ({
-      ...acc,
       _id: String(acc._id),
+      userId: acc.userId,
+      plaidItemId: acc.plaidItemId,
+      accountId: acc.accountId,
+      name: acc.name,
+      officialName: acc.officialName,
+      mask: acc.mask,
+      type: acc.type,
+      subtype: acc.subtype,
+      balances: acc.balances,
+      createdAt: acc.createdAt,
     }));
   },
 });
@@ -213,9 +312,19 @@ export const getAccountsByItem = query({
       .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
       .collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return accounts.map((acc) => ({
-      ...acc,
       _id: String(acc._id),
+      userId: acc.userId,
+      plaidItemId: acc.plaidItemId,
+      accountId: acc.accountId,
+      name: acc.name,
+      officialName: acc.officialName,
+      mask: acc.mask,
+      type: acc.type,
+      subtype: acc.subtype,
+      balances: acc.balances,
+      createdAt: acc.createdAt,
     }));
   },
 });
@@ -386,9 +495,22 @@ export const getLiabilitiesByItem = query({
       .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
       .collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return liabilities.map((l) => ({
-      ...l,
       _id: String(l._id),
+      userId: l.userId,
+      plaidItemId: l.plaidItemId,
+      accountId: l.accountId,
+      aprs: l.aprs,
+      isOverdue: l.isOverdue,
+      lastPaymentAmount: l.lastPaymentAmount,
+      lastPaymentDate: l.lastPaymentDate,
+      lastStatementBalance: l.lastStatementBalance,
+      lastStatementIssueDate: l.lastStatementIssueDate,
+      minimumPaymentAmount: l.minimumPaymentAmount,
+      nextPaymentDueDate: l.nextPaymentDueDate,
+      createdAt: l.createdAt,
+      updatedAt: l.updatedAt,
     }));
   },
 });
@@ -422,9 +544,22 @@ export const getLiabilitiesByUser = query({
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return liabilities.map((l) => ({
-      ...l,
       _id: String(l._id),
+      userId: l.userId,
+      plaidItemId: l.plaidItemId,
+      accountId: l.accountId,
+      aprs: l.aprs,
+      isOverdue: l.isOverdue,
+      lastPaymentAmount: l.lastPaymentAmount,
+      lastPaymentDate: l.lastPaymentDate,
+      lastStatementBalance: l.lastStatementBalance,
+      lastStatementIssueDate: l.lastStatementIssueDate,
+      minimumPaymentAmount: l.minimumPaymentAmount,
+      nextPaymentDueDate: l.nextPaymentDueDate,
+      createdAt: l.createdAt,
+      updatedAt: l.updatedAt,
     }));
   },
 });

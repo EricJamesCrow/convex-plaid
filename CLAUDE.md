@@ -731,3 +731,79 @@ When item status is `needs_reauth`:
 | `src/component/encryption.ts` | JWE encrypt/decrypt |
 | `src/component/utils.ts` | Plaid client init, transforms |
 | `src/component/errors.ts` | Error categorization |
+
+---
+
+## TODO: Future Plaid Products
+
+The component architecture supports adding new Plaid products. Products are already configurable (not hardcoded) - users can pass any product array to `createLinkToken`, and it's stored per-item in the database.
+
+### Currently Supported Products
+
+| Product | Method | Status |
+|---------|--------|--------|
+| `transactions` | `syncTransactions()` | ✅ Implemented |
+| `liabilities` | `fetchLiabilities()` | ✅ Implemented |
+| `auth` | via `fetchAccounts()` | ✅ Implicit |
+| Recurring | `fetchRecurringStreams()` | ✅ Implemented (no product flag needed) |
+
+### Products NOT Yet Implemented
+
+| Product | Priority | Notes |
+|---------|----------|-------|
+| `identity` | Low | KYC/verification use cases |
+| `assets` | Medium | Wealth management, loan underwriting |
+| `investments` | Medium | Brokerage accounts, holdings, securities |
+| `income` | Low | Income verification (different API flow) |
+| `transfer` | Low | ACH transfers (requires separate Plaid setup) |
+| `signal` | Low | ACH return risk scoring |
+
+### How to Add a New Product (e.g., Investments)
+
+1. **No changes to Link** - already accepts any product string via `products` arg
+
+2. **Add schema table** in `src/component/schema.ts`:
+   ```typescript
+   plaidInvestmentHoldings: defineTable({
+     plaidItemId: v.string(),
+     accountId: v.string(),
+     securityId: v.string(),
+     quantity: v.number(),
+     costBasis: v.optional(v.number()), // MILLIUNITS
+     // ... other fields from Plaid API
+   }).index("by_plaidItemId", ["plaidItemId"]),
+   ```
+
+3. **Add private mutation** in `src/component/private.ts`:
+   ```typescript
+   export const upsertInvestmentHolding = internalMutation({ ... })
+   ```
+
+4. **Add action** in `src/component/actions.ts`:
+   ```typescript
+   export const fetchInvestments = action({
+     args: { plaidItemId: v.string(), ...plaidConfigArgs },
+     handler: async (ctx, args) => {
+       const plaidClient = initPlaidClient(...);
+       const response = await plaidClient.investmentsHoldingsGet({ access_token });
+       // Transform and store holdings
+     },
+   });
+   ```
+
+5. **Add client method** in `src/client/index.ts`:
+   ```typescript
+   async fetchInvestments(ctx: ActionCtx, args: { plaidItemId: string }) {
+     return await ctx.runAction(this.component.actions.fetchInvestments, {
+       plaidItemId: args.plaidItemId,
+       ...this.config,
+     });
+   }
+   ```
+
+6. **Add public query** in `src/component/public.ts`:
+   ```typescript
+   export const getInvestmentsByUser = query({ ... })
+   ```
+
+7. **Update `onboardItem`** to optionally fetch investments based on stored products

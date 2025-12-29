@@ -24,31 +24,77 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     actions: {
+      completeReauth: FunctionReference<
+        "action",
+        "internal",
+        { plaidItemId: string },
+        { success: boolean },
+        Name
+      >;
       createLinkToken: FunctionReference<
         "action",
-        "public",
+        "internal",
         {
           clientName?: string;
-          countryCodes?: string[];
+          countryCodes?: Array<string>;
           language?: string;
           plaidClientId: string;
           plaidEnv: string;
           plaidSecret: string;
-          products?: string[];
+          products?: Array<string>;
           userId: string;
           webhookUrl?: string;
         },
         { linkToken: string },
         Name
       >;
-      exchangePublicToken: FunctionReference<
+      createUpdateLinkToken: FunctionReference<
         "action",
-        "public",
+        "internal",
+        {
+          encryptionKey: string;
+          plaidClientId: string;
+          plaidEnv: string;
+          plaidItemId: string;
+          plaidSecret: string;
+        },
+        { linkToken: string },
+        Name
+      >;
+      enrichTransactions: FunctionReference<
+        "action",
+        "internal",
         {
           encryptionKey: string;
           plaidClientId: string;
           plaidEnv: string;
           plaidSecret: string;
+          transactions: Array<{
+            amount: number;
+            description: string;
+            id: string;
+            iso_currency_code?: string;
+            location?: {
+              city?: string;
+              country?: string;
+              postal_code?: string;
+              region?: string;
+            };
+            mcc?: string;
+          }>;
+        },
+        { enriched: number; failed: number },
+        Name
+      >;
+      exchangePublicToken: FunctionReference<
+        "action",
+        "internal",
+        {
+          encryptionKey: string;
+          plaidClientId: string;
+          plaidEnv: string;
+          plaidSecret: string;
+          products?: Array<string>;
           publicToken: string;
           userId: string;
         },
@@ -57,7 +103,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
       fetchAccounts: FunctionReference<
         "action",
-        "public",
+        "internal",
         {
           encryptionKey: string;
           plaidClientId: string;
@@ -70,7 +116,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
       fetchLiabilities: FunctionReference<
         "action",
-        "public",
+        "internal",
         {
           encryptionKey: string;
           plaidClientId: string;
@@ -78,25 +124,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           plaidItemId: string;
           plaidSecret: string;
         },
-        { creditCards: number },
-        Name
-      >;
-      syncTransactions: FunctionReference<
-        "action",
-        "public",
-        {
-          encryptionKey: string;
-          plaidClientId: string;
-          plaidEnv: string;
-          plaidItemId: string;
-          plaidSecret: string;
-        },
-        { added: number; cursor: string; modified: number; removed: number },
+        { creditCards: number; mortgages: number; studentLoans: number },
         Name
       >;
       fetchRecurringStreams: FunctionReference<
         "action",
-        "public",
+        "internal",
         {
           encryptionKey: string;
           plaidClientId: string;
@@ -107,9 +140,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { inflows: number; outflows: number },
         Name
       >;
-      createUpdateLinkToken: FunctionReference<
+      syncTransactions: FunctionReference<
         "action",
-        "public",
+        "internal",
+        {
+          encryptionKey: string;
+          maxPages?: number;
+          maxTransactions?: number;
+          plaidClientId: string;
+          plaidEnv: string;
+          plaidItemId: string;
+          plaidSecret: string;
+        },
+        {
+          added: number;
+          cursor: string;
+          hasMore: boolean;
+          modified: number;
+          pagesProcessed: number;
+          removed: number;
+          skipReason?: string;
+          skipped?: boolean;
+        },
+        Name
+      >;
+      triggerTransactionsRefresh: FunctionReference<
+        "action",
+        "internal",
         {
           encryptionKey: string;
           plaidClientId: string;
@@ -117,384 +174,201 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           plaidItemId: string;
           plaidSecret: string;
         },
-        { linkToken: string },
-        Name
-      >;
-      completeReauth: FunctionReference<
-        "action",
-        "public",
-        { plaidItemId: string },
-        { success: boolean },
-        Name
-      >;
-    };
-    private: {
-      getPlaidItem: FunctionReference<
-        "query",
-        "internal",
-        { plaidItemId: string },
-        {
-          _id: any;
-          accessToken: string;
-          createdAt: number;
-          cursor?: string;
-          institutionId?: string;
-          institutionName?: string;
-          itemId: string;
-          lastSyncedAt?: number;
-          status: string;
-          syncError?: string;
-          userId: string;
-        } | null,
-        Name
-      >;
-      getPlaidItemByItemId: FunctionReference<
-        "query",
-        "internal",
-        { itemId: string },
-        any | null,
-        Name
-      >;
-      createPlaidItem: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          accessToken: string;
-          institutionId?: string;
-          institutionName?: string;
-          itemId: string;
-          status: string;
-          userId: string;
-        },
-        string,
-        Name
-      >;
-      updateItemStatus: FunctionReference<
-        "mutation",
-        "internal",
-        { plaidItemId: string; status: string; syncError?: string },
-        null,
-        Name
-      >;
-      updateItemCursor: FunctionReference<
-        "mutation",
-        "internal",
-        { cursor: string; plaidItemId: string },
-        null,
-        Name
-      >;
-      markNeedsReauth: FunctionReference<
-        "mutation",
-        "internal",
-        { itemId: string; reason: string },
-        null,
-        Name
-      >;
-      setItemError: FunctionReference<
-        "mutation",
-        "internal",
-        { errorCode: string; errorMessage: string; itemId: string },
-        null,
-        Name
-      >;
-      bulkUpsertAccounts: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          accounts: Array<{
-            accountId: string;
-            balances: {
-              available?: number;
-              current?: number;
-              isoCurrencyCode: string;
-              limit?: number;
-            };
-            mask?: string;
-            name: string;
-            officialName?: string;
-            subtype?: string;
-            type: string;
-          }>;
-          plaidItemId: string;
-          userId: string;
-        },
-        { created: number; updated: number },
-        Name
-      >;
-      bulkUpsertTransactions: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          added: Array<{
-            accountId: string;
-            amount: number;
-            categoryDetailed?: string;
-            categoryPrimary?: string;
-            date: string;
-            datetime?: string;
-            isoCurrencyCode: string;
-            merchantName?: string;
-            name: string;
-            paymentChannel?: string;
-            pending: boolean;
-            pendingTransactionId?: string;
-            transactionId: string;
-          }>;
-          modified: Array<{
-            accountId: string;
-            amount: number;
-            categoryDetailed?: string;
-            categoryPrimary?: string;
-            date: string;
-            datetime?: string;
-            isoCurrencyCode: string;
-            merchantName?: string;
-            name: string;
-            paymentChannel?: string;
-            pending: boolean;
-            pendingTransactionId?: string;
-            transactionId: string;
-          }>;
-          plaidItemId: string;
-          removed: string[];
-          userId: string;
-        },
-        { added: number; modified: number; removed: number },
-        Name
-      >;
-      upsertCreditCardLiability: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          accountId: string;
-          aprs: Array<{
-            aprPercentage: number;
-            aprType: string;
-            balanceSubjectToApr?: number;
-            interestChargeAmount?: number;
-          }>;
-          isOverdue: boolean;
-          lastPaymentAmount?: number;
-          lastPaymentDate?: string;
-          lastStatementBalance?: number;
-          lastStatementIssueDate?: string;
-          minimumPaymentAmount?: number;
-          nextPaymentDueDate?: string;
-          plaidItemId: string;
-          userId: string;
-        },
-        string,
-        Name
-      >;
-      scheduleSync: FunctionReference<
-        "mutation",
-        "internal",
-        { itemId: string; syncType: string },
-        null,
-        Name
-      >;
-      deactivateItem: FunctionReference<
-        "mutation",
-        "internal",
-        { itemId: string; reason: string },
-        null,
-        Name
-      >;
-      getAllActiveItems: FunctionReference<
-        "query",
-        "internal",
-        Record<string, never>,
-        Array<{
-          _id: string;
-          userId: string;
-          itemId: string;
-          accessToken: string;
-          cursor?: string;
-          lastSyncedAt?: number;
-        }>,
-        Name
-      >;
-      getItemsNeedingSync: FunctionReference<
-        "query",
-        "internal",
-        { maxAgeHours?: number },
-        Array<{
-          _id: string;
-          userId: string;
-          itemId: string;
-          accessToken: string;
-          cursor?: string;
-          lastSyncedAt?: number;
-        }>,
-        Name
-      >;
-      bulkUpsertRecurringStreams: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          userId: string;
-          plaidItemId: string;
-          streams: Array<{
-            streamId: string;
-            accountId: string;
-            description: string;
-            merchantName?: string;
-            averageAmount: number;
-            lastAmount: number;
-            isoCurrencyCode: string;
-            frequency: string;
-            status: "MATURE" | "EARLY_DETECTION" | "TOMBSTONED";
-            isActive: boolean;
-            type: "inflow" | "outflow";
-            category?: string;
-            firstDate?: string;
-            lastDate?: string;
-            predictedNextDate?: string;
-          }>;
-        },
-        { created: number; updated: number },
-        Name
-      >;
-      tombstoneStreams: FunctionReference<
-        "mutation",
-        "internal",
-        { plaidItemId: string; streamIds: string[] },
-        { tombstoned: number },
+        { error?: string; requestId?: string; success: boolean },
         Name
       >;
     };
     public: {
-      getItemsByUser: FunctionReference<
+      deletePlaidItem: FunctionReference<
+        "mutation",
+        "internal",
+        { plaidItemId: string },
+        {
+          deleted: {
+            accounts: number;
+            creditCardLiabilities: number;
+            items: number;
+            mortgageLiabilities: number;
+            recurringStreams: number;
+            studentLoanLiabilities: number;
+            transactions: number;
+          };
+        },
+        Name
+      >;
+      getAccountsByItem: FunctionReference<
         "query",
-        "public",
-        { userId: string },
+        "internal",
+        { plaidItemId: string },
         Array<{
           _id: string;
+          accountId: string;
+          balances: {
+            available?: number;
+            current?: number;
+            isoCurrencyCode: string;
+            limit?: number;
+          };
           createdAt: number;
-          institutionId?: string;
-          institutionName?: string;
-          itemId: string;
-          lastSyncedAt?: number;
-          status: string;
-          syncError?: string;
+          mask?: string;
+          name: string;
+          officialName?: string;
+          plaidItemId: string;
+          subtype?: string;
+          type: string;
           userId: string;
         }>,
         Name
       >;
+      getAccountsByUser: FunctionReference<
+        "query",
+        "internal",
+        { userId: string },
+        Array<{
+          _id: string;
+          accountId: string;
+          balances: {
+            available?: number;
+            current?: number;
+            isoCurrencyCode: string;
+            limit?: number;
+          };
+          createdAt: number;
+          mask?: string;
+          name: string;
+          officialName?: string;
+          plaidItemId: string;
+          subtype?: string;
+          type: string;
+          userId: string;
+        }>,
+        Name
+      >;
+      getActiveSubscriptions: FunctionReference<
+        "query",
+        "internal",
+        { userId: string },
+        Array<{
+          _id: string;
+          accountId: string;
+          averageAmount: number;
+          category?: string;
+          createdAt: number;
+          description: string;
+          firstDate?: string;
+          frequency: string;
+          isActive: boolean;
+          isoCurrencyCode: string;
+          lastAmount: number;
+          lastDate?: string;
+          merchantName?: string;
+          plaidItemId: string;
+          predictedNextDate?: string;
+          status: string;
+          streamId: string;
+          type: string;
+          updatedAt: number;
+          userId: string;
+        }>,
+        Name
+      >;
+      getAllInstitutions: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<{
+          _id: string;
+          institutionId: string;
+          lastFetched: number;
+          logo?: string;
+          name: string;
+          primaryColor?: string;
+          products?: Array<string>;
+          url?: string;
+        }>,
+        Name
+      >;
+      getInstitution: FunctionReference<
+        "query",
+        "internal",
+        { institutionId: string },
+        {
+          _id: string;
+          institutionId: string;
+          lastFetched: number;
+          logo?: string;
+          name: string;
+          primaryColor?: string;
+          products?: Array<string>;
+          url?: string;
+        } | null,
+        Name
+      >;
       getItem: FunctionReference<
         "query",
-        "public",
+        "internal",
         { plaidItemId: string },
         {
           _id: string;
+          activatedAt?: number;
+          circuitState?: string;
+          consecutiveFailures?: number;
           createdAt: number;
+          disconnectedAt?: number;
+          disconnectedReason?: string;
+          errorAt?: number;
+          errorCode?: string;
+          errorMessage?: string;
           institutionId?: string;
           institutionName?: string;
+          isActive?: boolean;
           itemId: string;
+          lastFailureAt?: number;
           lastSyncedAt?: number;
+          nextRetryAt?: number;
+          products: Array<string>;
+          reauthAt?: number;
+          reauthReason?: string;
           status: string;
           syncError?: string;
           userId: string;
         } | null,
         Name
       >;
-      getAccountsByUser: FunctionReference<
+      getItemsByUser: FunctionReference<
         "query",
-        "public",
+        "internal",
         { userId: string },
         Array<{
           _id: string;
-          accountId: string;
-          balances: {
-            available?: number;
-            current?: number;
-            isoCurrencyCode: string;
-            limit?: number;
-          };
+          activatedAt?: number;
+          circuitState?: string;
+          consecutiveFailures?: number;
           createdAt: number;
-          mask?: string;
-          name: string;
-          officialName?: string;
-          plaidItemId: string;
-          subtype?: string;
-          type: string;
-          userId: string;
-        }>,
-        Name
-      >;
-      getAccountsByItem: FunctionReference<
-        "query",
-        "public",
-        { plaidItemId: string },
-        Array<{
-          _id: string;
-          accountId: string;
-          balances: {
-            available?: number;
-            current?: number;
-            isoCurrencyCode: string;
-            limit?: number;
-          };
-          createdAt: number;
-          mask?: string;
-          name: string;
-          officialName?: string;
-          plaidItemId: string;
-          subtype?: string;
-          type: string;
-          userId: string;
-        }>,
-        Name
-      >;
-      getTransactionsByAccount: FunctionReference<
-        "query",
-        "public",
-        { accountId: string; limit?: number },
-        Array<{
-          _id: string;
-          accountId: string;
-          amount: number;
-          categoryDetailed?: string;
-          categoryPrimary?: string;
-          createdAt: number;
-          date: string;
-          datetime?: string;
-          isoCurrencyCode: string;
-          merchantName?: string;
-          name: string;
-          pending: boolean;
-          plaidItemId: string;
-          transactionId: string;
-          userId: string;
-        }>,
-        Name
-      >;
-      getTransactionsByUser: FunctionReference<
-        "query",
-        "public",
-        { endDate?: string; limit?: number; startDate?: string; userId: string },
-        Array<{
-          _id: string;
-          accountId: string;
-          amount: number;
-          categoryDetailed?: string;
-          categoryPrimary?: string;
-          createdAt: number;
-          date: string;
-          datetime?: string;
-          isoCurrencyCode: string;
-          merchantName?: string;
-          name: string;
-          pending: boolean;
-          plaidItemId: string;
-          transactionId: string;
+          disconnectedAt?: number;
+          disconnectedReason?: string;
+          errorAt?: number;
+          errorCode?: string;
+          errorMessage?: string;
+          institutionId?: string;
+          institutionName?: string;
+          isActive?: boolean;
+          itemId: string;
+          lastFailureAt?: number;
+          lastSyncedAt?: number;
+          nextRetryAt?: number;
+          products: Array<string>;
+          reauthAt?: number;
+          reauthReason?: string;
+          status: string;
+          syncError?: string;
           userId: string;
         }>,
         Name
       >;
       getLiabilitiesByItem: FunctionReference<
         "query",
-        "public",
+        "internal",
         { plaidItemId: string },
         Array<{
           _id: string;
@@ -521,7 +395,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
       getLiabilitiesByUser: FunctionReference<
         "query",
-        "public",
+        "internal",
         { userId: string },
         Array<{
           _id: string;
@@ -546,145 +420,429 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         }>,
         Name
       >;
-      deletePlaidItem: FunctionReference<
-        "mutation",
-        "public",
-        { plaidItemId: string },
+      getMerchantEnrichment: FunctionReference<
+        "query",
+        "internal",
+        { merchantId: string },
         {
-          deleted: {
-            accounts: number;
-            items: number;
-            liabilities: number;
-            transactions: number;
-            recurringStreams: number;
-          };
-        },
+          _id: string;
+          categoryDetailed?: string;
+          categoryIconUrl?: string;
+          categoryPrimary?: string;
+          confidenceLevel: string;
+          lastEnriched: number;
+          logoUrl?: string;
+          merchantId: string;
+          merchantName: string;
+          phoneNumber?: string;
+          website?: string;
+        } | null,
         Name
       >;
-      getRecurringStreamsByUser: FunctionReference<
+      getMortgageLiabilitiesByUser: FunctionReference<
         "query",
-        "public",
+        "internal",
         { userId: string },
         Array<{
           _id: string;
-          userId: string;
-          plaidItemId: string;
-          streamId: string;
           accountId: string;
-          description: string;
-          merchantName?: string;
-          averageAmount: number;
-          lastAmount: number;
-          isoCurrencyCode: string;
-          frequency: string;
-          status: string;
-          isActive: boolean;
-          type: string;
-          category?: string;
-          firstDate?: string;
-          lastDate?: string;
-          predictedNextDate?: string;
+          accountNumber?: string;
           createdAt: number;
+          currentLateFee?: number;
+          escrowBalance?: number;
+          hasPmi?: boolean;
+          hasPrepaymentPenalty?: boolean;
+          interestRatePercentage: number;
+          interestRateType?: string;
+          lastPaymentAmount?: number;
+          lastPaymentDate?: string;
+          loanTerm?: string;
+          loanTypeDescription?: string;
+          maturityDate?: string;
+          nextMonthlyPayment?: number;
+          nextPaymentDueDate?: string;
+          originationDate?: string;
+          originationPrincipalAmount?: number;
+          pastDueAmount?: number;
+          plaidItemId: string;
+          propertyAddress?: {
+            city?: string;
+            country?: string;
+            postalCode?: string;
+            region?: string;
+            street?: string;
+          };
           updatedAt: number;
+          userId: string;
+          ytdInterestPaid?: number;
+          ytdPrincipalPaid?: number;
+        }>,
+        Name
+      >;
+      getMortgageLiabilityByAccount: FunctionReference<
+        "query",
+        "internal",
+        { accountId: string },
+        {
+          _id: string;
+          accountId: string;
+          accountNumber?: string;
+          createdAt: number;
+          currentLateFee?: number;
+          escrowBalance?: number;
+          hasPmi?: boolean;
+          hasPrepaymentPenalty?: boolean;
+          interestRatePercentage: number;
+          interestRateType?: string;
+          lastPaymentAmount?: number;
+          lastPaymentDate?: string;
+          loanTerm?: string;
+          loanTypeDescription?: string;
+          maturityDate?: string;
+          nextMonthlyPayment?: number;
+          nextPaymentDueDate?: string;
+          originationDate?: string;
+          originationPrincipalAmount?: number;
+          pastDueAmount?: number;
+          plaidItemId: string;
+          propertyAddress?: {
+            city?: string;
+            country?: string;
+            postalCode?: string;
+            region?: string;
+            street?: string;
+          };
+          updatedAt: number;
+          userId: string;
+          ytdInterestPaid?: number;
+          ytdPrincipalPaid?: number;
+        } | null,
+        Name
+      >;
+      getRecurringIncome: FunctionReference<
+        "query",
+        "internal",
+        { userId: string },
+        Array<{
+          _id: string;
+          accountId: string;
+          averageAmount: number;
+          category?: string;
+          createdAt: number;
+          description: string;
+          firstDate?: string;
+          frequency: string;
+          isActive: boolean;
+          isoCurrencyCode: string;
+          lastAmount: number;
+          lastDate?: string;
+          merchantName?: string;
+          plaidItemId: string;
+          predictedNextDate?: string;
+          status: string;
+          streamId: string;
+          type: string;
+          updatedAt: number;
+          userId: string;
         }>,
         Name
       >;
       getRecurringStreamsByItem: FunctionReference<
         "query",
-        "public",
+        "internal",
         { plaidItemId: string },
         Array<{
           _id: string;
-          userId: string;
-          plaidItemId: string;
-          streamId: string;
           accountId: string;
-          description: string;
-          merchantName?: string;
           averageAmount: number;
-          lastAmount: number;
-          isoCurrencyCode: string;
-          frequency: string;
-          status: string;
-          isActive: boolean;
-          type: string;
           category?: string;
-          firstDate?: string;
-          lastDate?: string;
-          predictedNextDate?: string;
           createdAt: number;
+          description: string;
+          firstDate?: string;
+          frequency: string;
+          isActive: boolean;
+          isoCurrencyCode: string;
+          lastAmount: number;
+          lastDate?: string;
+          merchantName?: string;
+          plaidItemId: string;
+          predictedNextDate?: string;
+          status: string;
+          streamId: string;
+          type: string;
           updatedAt: number;
+          userId: string;
         }>,
         Name
       >;
-      getActiveSubscriptions: FunctionReference<
+      getRecurringStreamsByUser: FunctionReference<
         "query",
-        "public",
+        "internal",
         { userId: string },
         Array<{
           _id: string;
-          userId: string;
-          plaidItemId: string;
-          streamId: string;
           accountId: string;
-          description: string;
-          merchantName?: string;
           averageAmount: number;
-          lastAmount: number;
-          isoCurrencyCode: string;
-          frequency: string;
-          status: string;
-          isActive: boolean;
-          type: string;
           category?: string;
-          firstDate?: string;
-          lastDate?: string;
-          predictedNextDate?: string;
           createdAt: number;
+          description: string;
+          firstDate?: string;
+          frequency: string;
+          isActive: boolean;
+          isoCurrencyCode: string;
+          lastAmount: number;
+          lastDate?: string;
+          merchantName?: string;
+          plaidItemId: string;
+          predictedNextDate?: string;
+          status: string;
+          streamId: string;
+          type: string;
           updatedAt: number;
+          userId: string;
         }>,
         Name
       >;
-      getRecurringIncome: FunctionReference<
+      getStudentLoanLiabilitiesByUser: FunctionReference<
         "query",
-        "public",
+        "internal",
         { userId: string },
         Array<{
           _id: string;
-          userId: string;
-          plaidItemId: string;
-          streamId: string;
           accountId: string;
-          description: string;
-          merchantName?: string;
-          averageAmount: number;
-          lastAmount: number;
-          isoCurrencyCode: string;
-          frequency: string;
-          status: string;
-          isActive: boolean;
-          type: string;
-          category?: string;
-          firstDate?: string;
-          lastDate?: string;
-          predictedNextDate?: string;
+          accountNumber?: string;
           createdAt: number;
+          disbursementDates?: Array<string>;
+          expectedPayoffDate?: string;
+          guarantor?: string;
+          interestRatePercentage: number;
+          isOverdue?: boolean;
+          lastPaymentAmount?: number;
+          lastPaymentDate?: string;
+          lastStatementBalance?: number;
+          lastStatementIssueDate?: string;
+          loanName?: string;
+          loanStatus?: { endDate?: string; type?: string };
+          minimumPaymentAmount?: number;
+          nextPaymentDueDate?: string;
+          originationDate?: string;
+          originationPrincipalAmount?: number;
+          outstandingInterestAmount?: number;
+          paymentReferenceNumber?: string;
+          plaidItemId: string;
+          repaymentPlan?: { description?: string; type?: string };
+          sequenceNumber?: string;
+          servicerAddress?: {
+            city?: string;
+            country?: string;
+            postalCode?: string;
+            region?: string;
+            street?: string;
+          };
           updatedAt: number;
+          userId: string;
+          ytdInterestPaid?: number;
+          ytdPrincipalPaid?: number;
         }>,
+        Name
+      >;
+      getStudentLoanLiabilityByAccount: FunctionReference<
+        "query",
+        "internal",
+        { accountId: string },
+        {
+          _id: string;
+          accountId: string;
+          accountNumber?: string;
+          createdAt: number;
+          disbursementDates?: Array<string>;
+          expectedPayoffDate?: string;
+          guarantor?: string;
+          interestRatePercentage: number;
+          isOverdue?: boolean;
+          lastPaymentAmount?: number;
+          lastPaymentDate?: string;
+          lastStatementBalance?: number;
+          lastStatementIssueDate?: string;
+          loanName?: string;
+          loanStatus?: { endDate?: string; type?: string };
+          minimumPaymentAmount?: number;
+          nextPaymentDueDate?: string;
+          originationDate?: string;
+          originationPrincipalAmount?: number;
+          outstandingInterestAmount?: number;
+          paymentReferenceNumber?: string;
+          plaidItemId: string;
+          repaymentPlan?: { description?: string; type?: string };
+          sequenceNumber?: string;
+          servicerAddress?: {
+            city?: string;
+            country?: string;
+            postalCode?: string;
+            region?: string;
+            street?: string;
+          };
+          updatedAt: number;
+          userId: string;
+          ytdInterestPaid?: number;
+          ytdPrincipalPaid?: number;
+        } | null,
         Name
       >;
       getSubscriptionsSummary: FunctionReference<
         "query",
-        "public",
+        "internal",
         { userId: string },
         {
+          annualCount: number;
+          biweeklyCount: number;
           count: number;
+          monthlyCount: number;
           monthlyTotal: number;
           weeklyCount: number;
-          biweeklyCount: number;
-          monthlyCount: number;
-          annualCount: number;
         },
+        Name
+      >;
+      getSyncLogsByItem: FunctionReference<
+        "query",
+        "internal",
+        { limit?: number; plaidItemId: string },
+        Array<{
+          _id: string;
+          completedAt?: number;
+          durationMs?: number;
+          errorCode?: string;
+          errorMessage?: string;
+          plaidItemId: string;
+          result?: {
+            accountsUpdated?: number;
+            creditCardsUpdated?: number;
+            mortgagesUpdated?: number;
+            streamsUpdated?: number;
+            studentLoansUpdated?: number;
+            transactionsAdded?: number;
+            transactionsModified?: number;
+            transactionsRemoved?: number;
+          };
+          retryCount?: number;
+          startedAt: number;
+          status: string;
+          syncType: string;
+          trigger: string;
+          userId: string;
+        }>,
+        Name
+      >;
+      getSyncLogsByUser: FunctionReference<
+        "query",
+        "internal",
+        { limit?: number; userId: string },
+        Array<{
+          _id: string;
+          completedAt?: number;
+          durationMs?: number;
+          errorCode?: string;
+          errorMessage?: string;
+          plaidItemId: string;
+          result?: {
+            accountsUpdated?: number;
+            creditCardsUpdated?: number;
+            mortgagesUpdated?: number;
+            streamsUpdated?: number;
+            studentLoansUpdated?: number;
+            transactionsAdded?: number;
+            transactionsModified?: number;
+            transactionsRemoved?: number;
+          };
+          retryCount?: number;
+          startedAt: number;
+          status: string;
+          syncType: string;
+          trigger: string;
+          userId: string;
+        }>,
+        Name
+      >;
+      getSyncStats: FunctionReference<
+        "query",
+        "internal",
+        { daysBack?: number; plaidItemId: string },
+        {
+          averageDurationMs?: number;
+          errorCount: number;
+          lastErrorAt?: number;
+          lastErrorMessage?: string;
+          lastSuccessAt?: number;
+          lastSyncAt?: number;
+          successCount: number;
+          successRate: number;
+          totalSyncs: number;
+        },
+        Name
+      >;
+      getTransactionsByAccount: FunctionReference<
+        "query",
+        "internal",
+        { accountId: string; limit?: number },
+        Array<{
+          _id: string;
+          accountId: string;
+          amount: number;
+          categoryDetailed?: string;
+          categoryPrimary?: string;
+          createdAt: number;
+          date: string;
+          datetime?: string;
+          isoCurrencyCode: string;
+          merchantName?: string;
+          name: string;
+          pending: boolean;
+          plaidItemId: string;
+          transactionId: string;
+          userId: string;
+        }>,
+        Name
+      >;
+      getTransactionsByUser: FunctionReference<
+        "query",
+        "internal",
+        {
+          endDate?: string;
+          limit?: number;
+          startDate?: string;
+          userId: string;
+        },
+        Array<{
+          _id: string;
+          accountId: string;
+          amount: number;
+          categoryDetailed?: string;
+          categoryPrimary?: string;
+          createdAt: number;
+          date: string;
+          datetime?: string;
+          isoCurrencyCode: string;
+          merchantName?: string;
+          name: string;
+          pending: boolean;
+          plaidItemId: string;
+          transactionId: string;
+          userId: string;
+        }>,
+        Name
+      >;
+      setPlaidItemActive: FunctionReference<
+        "mutation",
+        "internal",
+        { isActive: boolean; itemId: string },
+        null,
+        Name
+      >;
+      togglePlaidItemActive: FunctionReference<
+        "mutation",
+        "internal",
+        { itemId: string },
+        { isActive: boolean },
         Name
       >;
     };

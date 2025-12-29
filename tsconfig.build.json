@@ -4,6 +4,8 @@
   "exclude": ["src/**/*.test.*", "./src/test.ts"],
   "compilerOptions": {
     "module": "ESNext",
-    "moduleResolution": "Bundler"
+    "moduleResolution": "Bundler",
+    "skipLibCheck": true,
+    "noImplicitAny": false
   }
 }

@@ -32,6 +32,9 @@ import type {
   SyncResult,
   SyncStats,
   InstitutionMetadata,
+  PlaidItem,
+  PlaidItemStatus,
+  CircuitState,
 } from "./types.js";
 import {
   verifyPlaidWebhook,
@@ -123,7 +126,21 @@ function validatePlaidConfig(config: PlaidConfig): void {
 // EXPORTS
 // =============================================================================
 
-export type PlaidComponent = ComponentApi;
+/**
+ * Type for the Plaid component API used by the Plaid client class.
+ * Uses Pick to only require the parts actually used by the Plaid client.
+ * This allows host apps to use the component without needing access to private internals.
+ *
+ * NOTE: registerRoutes() needs the full ComponentApi including private functions
+ * for webhook handling.
+ */
+export type PlaidComponent = Pick<ComponentApi, "actions" | "public">;
+
+/**
+ * Full component API type for use with registerRoutes().
+ * Re-exported for convenience.
+ */
+export type { ComponentApi };
 
 export type {
   PlaidConfig,
@@ -149,6 +166,10 @@ export type {
   SyncStats,
   // Institution types
   InstitutionMetadata,
+  // PlaidItem types
+  PlaidItem,
+  PlaidItemStatus,
+  CircuitState,
 };
 
 // =============================================================================
@@ -641,9 +662,13 @@ export function registerRoutes(
         item_id,
       });
 
+      // Cast component to access private functions (internal functions are not exposed in ComponentApi type)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const componentInternal = component as any;
+
       // Step 3: Look up the plaidItem by Plaid's item_id
       const plaidItem = await ctx.runQuery(
-        component.private.getPlaidItemByItemId,
+        componentInternal.private.getPlaidItemByItemId,
         { itemId: item_id }
       );
 
@@ -688,7 +713,7 @@ export function registerRoutes(
         );
 
         // Update item status to error
-        await ctx.runMutation(component.private.setItemError, {
+        await ctx.runMutation(componentInternal.private.setItemError, {
           itemId: item_id,
           errorCode,
           errorMessage,
@@ -699,7 +724,7 @@ export function registerRoutes(
         );
 
         // Mark item as needing re-auth
-        await ctx.runMutation(component.private.markNeedsReauth, {
+        await ctx.runMutation(componentInternal.private.markNeedsReauth, {
           itemId: item_id,
           reason: "Access token expiring - user must re-authenticate",
         });
@@ -707,7 +732,7 @@ export function registerRoutes(
         console.log(`[Plaid Webhook] User revoked permission for item: ${item_id}`);
 
         // Deactivate the item
-        await ctx.runMutation(component.private.deactivateItem, {
+        await ctx.runMutation(componentInternal.private.deactivateItem, {
           itemId: item_id,
           reason: "User revoked permission",
         });
