@@ -36,6 +36,11 @@ jobs:
           registry-url: 'https://npm.pkg.github.com'
           scope: '@ericjamescrow'
 
+      - name: Configure npm auth
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.NPM_TOKEN }}" >> ~/.npmrc
+          cat ~/.npmrc
+
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
