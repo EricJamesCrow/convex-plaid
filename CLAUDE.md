@@ -734,6 +734,59 @@ When item status is `needs_reauth`:
 
 ---
 
+## Publishing to npm
+
+This package is published to the public npm registry at `@ericjamescrow/convex-plaid`.
+
+### Setup npm Account
+
+1. **Create npm account** at https://www.npmjs.com/signup
+   - Choose a username
+   - Provide email address
+   - Set password
+   - Verify email
+
+2. **Generate Access Token:**
+   - Log in to npmjs.com
+   - Click your profile avatar (top right) → "Access Tokens"
+   - Click "Generate New Token"
+   - Select **"Automation"** token type (for CI/CD)
+   - Give it a name (e.g., "github-actions")
+   - Copy the token (starts with `npm_`)
+
+3. **Add Token to GitHub Secrets:**
+   ```bash
+   gh secret set NPM_TOKEN --body "npm_YOUR_TOKEN_HERE"
+   ```
+
+### Publishing Workflow
+
+The GitHub Actions workflow (`.github/workflows/publish.yml`) automatically publishes on release:
+
+1. **Create a release** on GitHub → triggers workflow
+2. Workflow runs: test → typecheck → build → publish
+3. Package available at `npm install @ericjamescrow/convex-plaid`
+
+### Manual Publishing
+
+To publish manually (not recommended):
+
+```bash
+npm login                    # Login to npm
+npm run build               # Build the package
+npm publish --access public  # Publish scoped package publicly
+```
+
+### Version Bumping
+
+The workflow supports manual version bumps via workflow_dispatch:
+
+1. Go to Actions → "Publish to npm" → "Run workflow"
+2. Select version bump type: patch, minor, or major
+3. Workflow bumps version, commits, tags, and publishes
+
+---
+
 ## TODO: Future Plaid Products
 
 The component architecture supports adding new Plaid products. Products are already configurable (not hardcoded) - users can pass any product array to `createLinkToken`, and it's stored per-item in the database.
