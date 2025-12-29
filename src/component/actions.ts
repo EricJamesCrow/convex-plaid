@@ -119,7 +119,7 @@ export const exchangePublicToken = action({
     itemId: v.string(),
     plaidItemId: v.string(),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{ success: boolean; itemId: string; plaidItemId: string }> => {
     console.log("[Plaid Component] Exchanging public token...");
 
     const plaidClient = initPlaidClient(
@@ -181,7 +181,7 @@ export const exchangePublicToken = action({
 
     // Create plaidItem in component database
     // products defaults to ["transactions"] if not specified
-    const plaidItemId = await ctx.runMutation(internal.private.createPlaidItem, {
+    const plaidItemId: string = await ctx.runMutation(internal.private.createPlaidItem, {
       userId: args.userId,
       itemId,
       accessToken: encryptedToken,
@@ -365,11 +365,27 @@ export const syncTransactions = action({
     skipped: v.optional(v.boolean()), // True if sync was skipped due to lock conflict
     skipReason: v.optional(v.string()),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{
+    added: number;
+    modified: number;
+    removed: number;
+    cursor: string;
+    hasMore: boolean;
+    pagesProcessed: number;
+    skipped?: boolean;
+    skipReason?: string;
+  }> => {
     console.log("[Plaid Component] Starting transaction sync...");
 
     // Step 1: Acquire sync lock (prevents concurrent syncs)
-    const lockResult = await ctx.runMutation(internal.private.acquireSyncLock, {
+    const lockResult: {
+      acquired: boolean;
+      reason?: string;
+      syncVersion?: number;
+      cursor?: string | null;
+      accessToken?: string;
+      userId?: string;
+    } = await ctx.runMutation(internal.private.acquireSyncLock, {
       plaidItemId: args.plaidItemId,
     });
 
@@ -389,7 +405,11 @@ export const syncTransactions = action({
       };
     }
 
-    const { syncVersion, cursor: initialCursor, accessToken: encryptedToken, userId } = lockResult;
+    // These fields are guaranteed to be present when acquired is true
+    const syncVersion = lockResult.syncVersion!;
+    const initialCursor = lockResult.cursor;
+    const encryptedToken = lockResult.accessToken!;
+    const userId = lockResult.userId!;
 
     console.log(
       `[Plaid Component] Lock acquired (version ${syncVersion}), cursor: ${initialCursor?.substring(0, 20) || "empty"}...`

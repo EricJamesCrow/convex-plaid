@@ -77,13 +77,23 @@ export const syncAllActiveItems = internalAction({
     errors: v.number(),
     skipped: v.number(),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{
+    totalItems: number;
+    synced: number;
+    errors: number;
+    skipped: number;
+  }> => {
     const syncType = args.syncType ?? "transactions";
 
     console.log(`[Plaid Cron] Starting ${syncType} sync for all active items...`);
 
     // Get all active items
-    const items = await ctx.runQuery(internal.private.getAllActiveItems, {});
+    const items: Array<{
+      _id: string;
+      accessToken: string;
+      userId: string;
+      cursor?: string;
+    }> = await ctx.runQuery(internal.private.getAllActiveItems, {});
 
     console.log(`[Plaid Cron] Found ${items.length} active items`);
 
@@ -189,7 +199,11 @@ export const syncStaleItems = internalAction({
     synced: v.number(),
     errors: v.number(),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{
+    totalItems: number;
+    synced: number;
+    errors: number;
+  }> => {
     const maxAgeHours = args.maxAgeHours ?? 24;
 
     console.log(
@@ -197,7 +211,12 @@ export const syncStaleItems = internalAction({
     );
 
     // Get items needing sync
-    const items = await ctx.runQuery(internal.private.getItemsNeedingSync, {
+    const items: Array<{
+      _id: string;
+      accessToken: string;
+      userId: string;
+      cursor?: string;
+    }> = await ctx.runQuery(internal.private.getItemsNeedingSync, {
       maxAgeHours,
     });
 
