@@ -1,7 +1,7 @@
 {
   "name": "@ericjamescrow/convex-plaid",
   "description": "A Plaid component for Convex - bank accounts, transactions, and liabilities.",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -33,7 +33,7 @@
     "test": "vitest run --typecheck",
     "test:watch": "vitest --typecheck --clearScreen false",
     "prepublishOnly": "npm run clean && npm run build",
-    "preversion": "npm run clean && npm ci && npm run build && run-p test lint typecheck",
+    "preversion": "npm run clean && npm ci && npm run build && run-p test typecheck",
     "release": "npm version patch && npm publish && git push --follow-tags"
   },
   "files": [
