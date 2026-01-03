@@ -397,6 +397,7 @@ export class Plaid {
         id: string;
         description: string;
         amount: number;
+        direction: "INFLOW" | "OUTFLOW";
         iso_currency_code?: string;
         mcc?: string;
         location?: {

@@ -1071,6 +1071,7 @@ export const enrichTransactions = action({
         id: v.string(),
         description: v.string(),
         amount: v.number(),
+        direction: v.union(v.literal("INFLOW"), v.literal("OUTFLOW")),
         iso_currency_code: v.optional(v.string()),
         mcc: v.optional(v.string()),
         location: v.optional(
@@ -1105,10 +1106,12 @@ export const enrichTransactions = action({
     );
 
     // Prepare transactions for Plaid Enrich API
+    // Note: amount must be absolute value (>= 0), direction indicates flow
     const enrichmentTransactions = args.transactions.map((tx) => ({
       id: tx.id,
       description: tx.description,
-      amount: tx.amount,
+      amount: Math.abs(tx.amount), // Plaid requires positive amounts
+      direction: tx.direction,
       iso_currency_code: tx.iso_currency_code ?? "USD",
       mcc: tx.mcc,
       location: tx.location
