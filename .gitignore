@@ -26,3 +26,4 @@ npm-debug.log*
 
 # References (not part of the package)
 references/
+coverage/

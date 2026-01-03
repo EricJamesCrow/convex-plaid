@@ -199,7 +199,28 @@ export function isPermanent(error: PlaidSyncError): boolean {
 
 /**
  * Format error for logging with consistent structure.
+ *
+ * Accepts either a PlaidSyncError or any unknown error.
+ * If passed a raw error, it will be categorized first.
  */
-export function formatErrorForLog(error: PlaidSyncError): string {
-  return `[${error.category.toUpperCase()}] ${error.code}: ${error.message}`;
+export function formatErrorForLog(error: PlaidSyncError | unknown): string {
+  // Handle raw errors by categorizing them first
+  if (!error || typeof error !== "object") {
+    return `[PERMANENT] UNKNOWN: ${String(error)}`;
+  }
+
+  const err = error as Record<string, unknown>;
+
+  // Check if it's already a PlaidSyncError (has category, code, message)
+  if (
+    typeof err.category === "string" &&
+    typeof err.code === "string" &&
+    typeof err.message === "string"
+  ) {
+    return `[${err.category.toUpperCase()}] ${err.code}: ${err.message}`;
+  }
+
+  // Otherwise, categorize the raw error first
+  const categorized = categorizeError(error);
+  return `[${categorized.category.toUpperCase()}] ${categorized.code}: ${categorized.message}`;
 }

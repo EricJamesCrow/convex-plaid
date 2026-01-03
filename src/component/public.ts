@@ -358,6 +358,19 @@ export const getTransactionsByAccount = query({
       pending: v.boolean(),
       categoryPrimary: v.optional(v.string()),
       categoryDetailed: v.optional(v.string()),
+      enrichmentData: v.optional(
+        v.object({
+          counterpartyName: v.optional(v.string()),
+          counterpartyType: v.optional(v.string()),
+          counterpartyEntityId: v.optional(v.string()),
+          counterpartyConfidence: v.optional(v.string()),
+          counterpartyLogoUrl: v.optional(v.string()),
+          counterpartyWebsite: v.optional(v.string()),
+          counterpartyPhoneNumber: v.optional(v.string()),
+          enrichedAt: v.optional(v.number()),
+        })
+      ),
+      merchantId: v.optional(v.string()),
       createdAt: v.number(),
     })
   ),
@@ -386,6 +399,8 @@ export const getTransactionsByAccount = query({
       pending: txn.pending,
       categoryPrimary: txn.categoryPrimary,
       categoryDetailed: txn.categoryDetailed,
+      enrichmentData: txn.enrichmentData,
+      merchantId: txn.merchantId,
       createdAt: txn.createdAt,
     }));
   },
@@ -417,6 +432,19 @@ export const getTransactionsByUser = query({
       pending: v.boolean(),
       categoryPrimary: v.optional(v.string()),
       categoryDetailed: v.optional(v.string()),
+      enrichmentData: v.optional(
+        v.object({
+          counterpartyName: v.optional(v.string()),
+          counterpartyType: v.optional(v.string()),
+          counterpartyEntityId: v.optional(v.string()),
+          counterpartyConfidence: v.optional(v.string()),
+          counterpartyLogoUrl: v.optional(v.string()),
+          counterpartyWebsite: v.optional(v.string()),
+          counterpartyPhoneNumber: v.optional(v.string()),
+          enrichedAt: v.optional(v.number()),
+        })
+      ),
+      merchantId: v.optional(v.string()),
       createdAt: v.number(),
     })
   ),
@@ -457,6 +485,8 @@ export const getTransactionsByUser = query({
       pending: txn.pending,
       categoryPrimary: txn.categoryPrimary,
       categoryDetailed: txn.categoryDetailed,
+      enrichmentData: txn.enrichmentData,
+      merchantId: txn.merchantId,
       createdAt: txn.createdAt,
     }));
   },

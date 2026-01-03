@@ -31,6 +31,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run --typecheck",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest --typecheck --clearScreen false",
     "prepublishOnly": "npm run clean && npm run build",
     "preversion": "npm run clean && npm ci && npm run build && run-p test typecheck",
@@ -79,6 +80,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/react": "^18.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "chokidar-cli": "^3.0.0",
     "convex": "^1.29.0",
     "convex-test": "^0.0.40",
