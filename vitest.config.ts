@@ -15,7 +15,6 @@ export default defineConfig({
         "src/**/*.test.ts",
         "src/**/*.d.ts",
         "src/**/_generated/**",
-        "src/cli/**", // CLI is integration-tested differently
       ],
       thresholds: {
         // Start with current coverage, increase as we add more tests

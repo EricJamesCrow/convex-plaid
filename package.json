@@ -18,9 +18,6 @@
     "fintech"
   ],
   "type": "module",
-  "bin": {
-    "convex-plaid": "./dist/cli/index.js"
-  },
   "scripts": {
     "dev": "run-p -r 'dev:*'",
     "dev:backend": "convex dev --typecheck-components",
