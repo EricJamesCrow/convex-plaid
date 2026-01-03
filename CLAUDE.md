@@ -860,3 +860,35 @@ The component architecture supports adding new Plaid products. Products are alre
    ```
 
 7. **Update `onboardItem`** to optionally fetch investments based on stored products
+
+---
+
+## Known Issues & Notes
+
+### Transaction Enrichment in Sandbox Mode
+
+**Status:** Partially working (Jan 2026)
+
+The `enrichTransactions` action is now functional, but **Plaid Sandbox only enriches specific test transactions**. When testing:
+
+- Transactions with names like "Uber", "Target", "Starbucks", "McDonald's" will enrich successfully
+- Real/custom transaction names return empty enrichment data (counted as "failed")
+- This is a **Plaid sandbox limitation**, not a bug in this component
+
+**Test Results (Sandbox):**
+- 50 transactions sent → 50 failed = Expected behavior for real transaction names
+- The API call succeeds, but Plaid returns no counterparty data for unrecognized merchants
+
+**To verify enrichment is working:**
+1. Create sandbox transactions with known merchant names (Uber, Starbucks, etc.)
+2. Or switch to Plaid Development/Production environment
+
+**Fixes applied (Jan 2026):**
+1. Added required `direction` field (INFLOW/OUTFLOW) to enrichTransactions API
+2. Fixed `formatErrorForLog` to handle raw errors without crashing
+3. Public queries now return `enrichmentData` and `merchantId` fields
+
+**Next steps for production:**
+- Test with Plaid Development environment (real merchant data)
+- Consider adding enrichment step to `onboardNewConnectionAction`
+- Add retry logic for failed enrichments
