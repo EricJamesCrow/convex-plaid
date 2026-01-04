@@ -736,54 +736,15 @@ When item status is `needs_reauth`:
 
 ## Publishing to npm
 
-This package is published to the public npm registry at `@crowdevelopment/convex-plaid`.
+This package is published at [`@crowdevelopment/convex-plaid`](https://www.npmjs.com/package/@crowdevelopment/convex-plaid).
 
-### Setup npm Account
+### Release Process
 
-1. **Create npm account** at https://www.npmjs.com/signup
-   - Choose a username
-   - Provide email address
-   - Set password
-   - Verify email
+1. Update version: `npm version patch|minor|major`
+2. Push with tags: `git push && git push --tags`
+3. Create a GitHub release → triggers automatic publish via GitHub Actions
 
-2. **Generate Access Token:**
-   - Log in to npmjs.com
-   - Click your profile avatar (top right) → "Access Tokens"
-   - Click "Generate New Token"
-   - Select **"Automation"** token type (for CI/CD)
-   - Give it a name (e.g., "github-actions")
-   - Copy the token (starts with `npm_`)
-
-3. **Add Token to GitHub Secrets:**
-   ```bash
-   gh secret set NPM_TOKEN --body "npm_YOUR_TOKEN_HERE"
-   ```
-
-### Publishing Workflow
-
-The GitHub Actions workflow (`.github/workflows/publish.yml`) automatically publishes on release:
-
-1. **Create a release** on GitHub → triggers workflow
-2. Workflow runs: test → typecheck → build → publish
-3. Package available at `npm install @crowdevelopment/convex-plaid`
-
-### Manual Publishing
-
-To publish manually (not recommended):
-
-```bash
-npm login                    # Login to npm
-npm run build               # Build the package
-npm publish --access public  # Publish scoped package publicly
-```
-
-### Version Bumping
-
-The workflow supports manual version bumps via workflow_dispatch:
-
-1. Go to Actions → "Publish to npm" → "Run workflow"
-2. Select version bump type: patch, minor, or major
-3. Workflow bumps version, commits, tags, and publishes
+The workflow (`.github/workflows/publish.yml`) runs: test → typecheck → build → publish.
 
 ---
 
