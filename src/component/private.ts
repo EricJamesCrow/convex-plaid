@@ -9,6 +9,7 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server.js";
+import { internal } from "./_generated/api.js";
 import type { QueryCtx, MutationCtx } from "./_generated/server.js";
 
 // =============================================================================
@@ -744,6 +745,11 @@ export const bulkUpsertAccounts = internalMutation({
 /**
  * Bulk upsert transactions.
  * Handles added, modified, and removed transactions from sync.
+ *
+ * OPTIMIZATION: Uses batch query pattern to avoid N+1 queries.
+ * Instead of querying for each modified/removed transaction individually,
+ * we fetch all existing transactions for this item upfront and use a Map
+ * for O(1) lookups. This reduces query count from O(n) to O(1).
  */
 export const bulkUpsertTransactions = internalMutation({
   args: {
@@ -761,6 +767,18 @@ export const bulkUpsertTransactions = internalMutation({
   handler: async (ctx, args) => {
     const now = Date.now();
 
+    // OPTIMIZATION: Batch query - fetch all existing transactions for this item upfront
+    // This replaces N individual queries (one per modified/removed) with 1 query
+    const existingTransactions = await ctx.db
+      .query("plaidTransactions")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .collect();
+
+    // Build lookup map: transactionId -> document _id (O(1) lookup)
+    const transactionIdToDocId = new Map(
+      existingTransactions.map((t) => [t.transactionId, t._id])
+    );
+
     // Insert added transactions
     for (const txn of args.added) {
       await ctx.db.insert("plaidTransactions", {
@@ -771,41 +789,33 @@ export const bulkUpsertTransactions = internalMutation({
       });
     }
 
-    // Update modified transactions
+    // Update modified transactions (no query in loop - use Map lookup)
+    let modifiedCount = 0;
     for (const txn of args.modified) {
-      const existing = await ctx.db
-        .query("plaidTransactions")
-        .withIndex("by_transaction_id", (q) =>
-          q.eq("transactionId", txn.transactionId)
-        )
-        .first();
-
-      if (existing) {
-        await ctx.db.patch(existing._id, {
+      const docId = transactionIdToDocId.get(txn.transactionId);
+      if (docId) {
+        await ctx.db.patch(docId, {
           ...txn,
           updatedAt: now,
         });
+        modifiedCount++;
       }
     }
 
-    // Delete removed transactions
+    // Delete removed transactions (no query in loop - use Map lookup)
+    let removedCount = 0;
     for (const transactionId of args.removed) {
-      const existing = await ctx.db
-        .query("plaidTransactions")
-        .withIndex("by_transaction_id", (q) =>
-          q.eq("transactionId", transactionId)
-        )
-        .first();
-
-      if (existing) {
-        await ctx.db.delete(existing._id);
+      const docId = transactionIdToDocId.get(transactionId);
+      if (docId) {
+        await ctx.db.delete(docId);
+        removedCount++;
       }
     }
 
     return {
       added: args.added.length,
-      modified: args.modified.length,
-      removed: args.removed.length,
+      modified: modifiedCount,
+      removed: removedCount,
     };
   },
 });
@@ -1039,6 +1049,190 @@ export const deactivateItem = internalMutation({
   },
 });
 
+/**
+ * Recursively delete data associated with a plaidItem in batches.
+ *
+ * This is the worker mutation scheduled by deletePlaidItem.
+ * It deletes data in configurable batch sizes to avoid mutation timeouts.
+ * If more data remains after a batch, it schedules itself to continue.
+ *
+ * Deletion order:
+ * 1. Transactions (usually largest collection)
+ * 2. Accounts
+ * 3. Credit card liabilities
+ * 4. Mortgage liabilities
+ * 5. Student loan liabilities
+ * 6. Recurring streams
+ * 7. The plaidItem itself (final step)
+ */
+export const cleanupDeletedItem = internalMutation({
+  args: {
+    plaidItemId: v.string(),
+    batchSize: v.optional(v.number()),
+  },
+  returns: v.object({
+    status: v.union(v.literal("in_progress"), v.literal("complete")),
+    deleted: v.number(),
+    collection: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const batchSize = args.batchSize ?? 500;
+    let totalDeleted = 0;
+
+    // Delete transactions first (usually the largest collection)
+    const transactions = await ctx.db
+      .query("plaidTransactions")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .take(batchSize);
+
+    if (transactions.length > 0) {
+      for (const txn of transactions) {
+        await ctx.db.delete(txn._id);
+      }
+      totalDeleted += transactions.length;
+
+      // If we hit the batch limit, there may be more - schedule next batch
+      if (transactions.length >= batchSize) {
+        await ctx.scheduler.runAfter(0, internal.private.cleanupDeletedItem, args);
+        return {
+          status: "in_progress" as const,
+          deleted: totalDeleted,
+          collection: "transactions",
+        };
+      }
+    }
+
+    // Delete accounts
+    const accounts = await ctx.db
+      .query("plaidAccounts")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .take(batchSize);
+
+    if (accounts.length > 0) {
+      for (const acc of accounts) {
+        await ctx.db.delete(acc._id);
+      }
+      totalDeleted += accounts.length;
+
+      if (accounts.length >= batchSize) {
+        await ctx.scheduler.runAfter(0, internal.private.cleanupDeletedItem, args);
+        return {
+          status: "in_progress" as const,
+          deleted: totalDeleted,
+          collection: "accounts",
+        };
+      }
+    }
+
+    // Delete credit card liabilities
+    const creditCards = await ctx.db
+      .query("plaidCreditCardLiabilities")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .take(batchSize);
+
+    if (creditCards.length > 0) {
+      for (const cc of creditCards) {
+        await ctx.db.delete(cc._id);
+      }
+      totalDeleted += creditCards.length;
+
+      if (creditCards.length >= batchSize) {
+        await ctx.scheduler.runAfter(0, internal.private.cleanupDeletedItem, args);
+        return {
+          status: "in_progress" as const,
+          deleted: totalDeleted,
+          collection: "creditCardLiabilities",
+        };
+      }
+    }
+
+    // Delete mortgage liabilities
+    const mortgages = await ctx.db
+      .query("plaidMortgageLiabilities")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .take(batchSize);
+
+    if (mortgages.length > 0) {
+      for (const m of mortgages) {
+        await ctx.db.delete(m._id);
+      }
+      totalDeleted += mortgages.length;
+
+      if (mortgages.length >= batchSize) {
+        await ctx.scheduler.runAfter(0, internal.private.cleanupDeletedItem, args);
+        return {
+          status: "in_progress" as const,
+          deleted: totalDeleted,
+          collection: "mortgageLiabilities",
+        };
+      }
+    }
+
+    // Delete student loan liabilities
+    const studentLoans = await ctx.db
+      .query("plaidStudentLoanLiabilities")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .take(batchSize);
+
+    if (studentLoans.length > 0) {
+      for (const sl of studentLoans) {
+        await ctx.db.delete(sl._id);
+      }
+      totalDeleted += studentLoans.length;
+
+      if (studentLoans.length >= batchSize) {
+        await ctx.scheduler.runAfter(0, internal.private.cleanupDeletedItem, args);
+        return {
+          status: "in_progress" as const,
+          deleted: totalDeleted,
+          collection: "studentLoanLiabilities",
+        };
+      }
+    }
+
+    // Delete recurring streams
+    const streams = await ctx.db
+      .query("plaidRecurringStreams")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .take(batchSize);
+
+    if (streams.length > 0) {
+      for (const s of streams) {
+        await ctx.db.delete(s._id);
+      }
+      totalDeleted += streams.length;
+
+      if (streams.length >= batchSize) {
+        await ctx.scheduler.runAfter(0, internal.private.cleanupDeletedItem, args);
+        return {
+          status: "in_progress" as const,
+          deleted: totalDeleted,
+          collection: "recurringStreams",
+        };
+      }
+    }
+
+    // Finally, delete the plaidItem itself
+    const items = await ctx.db.query("plaidItems").collect();
+    const item = items.find((i) => String(i._id) === args.plaidItemId);
+
+    if (item) {
+      await ctx.db.delete(item._id);
+      totalDeleted += 1;
+    }
+
+    console.log(
+      `[Plaid Cleanup] Completed deletion of item ${args.plaidItemId}, ` +
+        `total deleted: ${totalDeleted}`
+    );
+
+    return {
+      status: "complete" as const,
+      deleted: totalDeleted,
+    };
+  },
+});
+
 // =============================================================================
 // INTERNAL QUERIES - For Cron Jobs
 // =============================================================================
@@ -1118,6 +1312,47 @@ export const getItemsNeedingSync = internalQuery({
       cursor: item.cursor,
       lastSyncedAt: item.lastSyncedAt,
     }));
+  },
+});
+
+/**
+ * Get a single item by ID with its access token.
+ * Used by syncSingleItem to fetch item details for fan-out sync.
+ */
+export const getItemWithToken = internalQuery({
+  args: {
+    plaidItemId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      _id: v.string(),
+      userId: v.string(),
+      itemId: v.string(),
+      accessToken: v.string(),
+      cursor: v.optional(v.string()),
+      lastSyncedAt: v.optional(v.number()),
+    }),
+    v.null()
+  ),
+  handler: async (ctx, args) => {
+    const item = await ctx.db
+      .query("plaidItems")
+      .filter((q) => q.eq(q.field("_id"), args.plaidItemId as any))
+      .first();
+
+    if (!item) return null;
+
+    // Only return if item is active
+    if (item.status !== "active") return null;
+
+    return {
+      _id: String(item._id),
+      userId: item.userId,
+      itemId: item.itemId,
+      accessToken: item.accessToken,
+      cursor: item.cursor,
+      lastSyncedAt: item.lastSyncedAt,
+    };
   },
 });
 

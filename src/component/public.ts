@@ -10,6 +10,7 @@
 
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server.js";
+import { internal } from "./_generated/api.js";
 
 // =============================================================================
 // VALIDATORS (Reusable)
@@ -821,21 +822,20 @@ export const getMerchantEnrichment = query({
 // =============================================================================
 
 /**
- * Delete a plaidItem and all associated data.
- * Cascades to accounts, transactions, liabilities (credit cards, mortgages, student loans), and recurring streams.
+ * Delete a Plaid item and all associated data.
+ *
+ * Uses recursive batched deletion to handle large datasets without timeout.
+ * The item is immediately marked as "deleting" (fast response to caller),
+ * then background workers delete associated data in batches.
+ *
+ * @param plaidItemId - The ID of the plaidItem to delete
+ * @returns Status of deletion (scheduled or not found)
  */
 export const deletePlaidItem = mutation({
   args: { plaidItemId: v.string() },
   returns: v.object({
-    deleted: v.object({
-      items: v.number(),
-      accounts: v.number(),
-      transactions: v.number(),
-      creditCardLiabilities: v.number(),
-      mortgageLiabilities: v.number(),
-      studentLoanLiabilities: v.number(),
-      recurringStreams: v.number(),
-    }),
+    status: v.union(v.literal("scheduled"), v.literal("not_found")),
+    message: v.string(),
   }),
   handler: async (ctx, args) => {
     // Find the item
@@ -844,91 +844,25 @@ export const deletePlaidItem = mutation({
 
     if (!item) {
       return {
-        deleted: {
-          items: 0,
-          accounts: 0,
-          transactions: 0,
-          creditCardLiabilities: 0,
-          mortgageLiabilities: 0,
-          studentLoanLiabilities: 0,
-          recurringStreams: 0,
-        },
+        status: "not_found" as const,
+        message: "Plaid item not found",
       };
     }
 
-    // Delete the item
-    await ctx.db.delete(item._id);
+    // Mark as "deleting" immediately (user sees fast response)
+    await ctx.db.patch(item._id, {
+      status: "deleting" as const,
+    });
 
-    // Delete associated accounts
-    const accounts = await ctx.db
-      .query("plaidAccounts")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
-
-    for (const acc of accounts) {
-      await ctx.db.delete(acc._id);
-    }
-
-    // Delete associated transactions
-    const transactions = await ctx.db
-      .query("plaidTransactions")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
-
-    for (const txn of transactions) {
-      await ctx.db.delete(txn._id);
-    }
-
-    // Delete associated credit card liabilities
-    const creditCardLiabilities = await ctx.db
-      .query("plaidCreditCardLiabilities")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
-
-    for (const l of creditCardLiabilities) {
-      await ctx.db.delete(l._id);
-    }
-
-    // Delete associated mortgage liabilities
-    const mortgageLiabilities = await ctx.db
-      .query("plaidMortgageLiabilities")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
-
-    for (const m of mortgageLiabilities) {
-      await ctx.db.delete(m._id);
-    }
-
-    // Delete associated student loan liabilities
-    const studentLoanLiabilities = await ctx.db
-      .query("plaidStudentLoanLiabilities")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
-
-    for (const sl of studentLoanLiabilities) {
-      await ctx.db.delete(sl._id);
-    }
-
-    // Delete associated recurring streams
-    const recurringStreams = await ctx.db
-      .query("plaidRecurringStreams")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
-
-    for (const stream of recurringStreams) {
-      await ctx.db.delete(stream._id);
-    }
+    // Schedule background cleanup (runs in batches to avoid timeout)
+    await ctx.scheduler.runAfter(0, internal.private.cleanupDeletedItem, {
+      plaidItemId: args.plaidItemId,
+      batchSize: 500,
+    });
 
     return {
-      deleted: {
-        items: 1,
-        accounts: accounts.length,
-        transactions: transactions.length,
-        creditCardLiabilities: creditCardLiabilities.length,
-        mortgageLiabilities: mortgageLiabilities.length,
-        studentLoanLiabilities: studentLoanLiabilities.length,
-        recurringStreams: recurringStreams.length,
-      },
+      status: "scheduled" as const,
+      message: "Deletion scheduled - associated data will be removed in background",
     };
   },
 });

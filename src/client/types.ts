@@ -297,7 +297,8 @@ export type PlaidItemStatus =
   | "syncing"
   | "active"
   | "error"
-  | "needs_reauth";
+  | "needs_reauth"
+  | "deleting";
 
 /**
  * Circuit breaker state for resilience.
