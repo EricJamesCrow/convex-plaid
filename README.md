@@ -1,8 +1,8 @@
-# @ericjamescrow/convex-plaid
+# @crowdevelopment/convex-plaid
 
 A Convex component for integrating Plaid banking into your application.
 
-[![npm version](https://badge.fury.io/js/@ericjamescrow%2Fconvex-plaid.svg)](https://badge.fury.io/js/@ericjamescrow%2Fconvex-plaid)
+[![npm version](https://badge.fury.io/js/@crowdevelopment%2Fconvex-plaid.svg)](https://badge.fury.io/js/@crowdevelopment%2Fconvex-plaid)
 
 ## Features
 
@@ -21,7 +21,7 @@ A Convex component for integrating Plaid banking into your application.
 ### 1. Install the Component
 
 ```bash
-npm install @ericjamescrow/convex-plaid
+npm install @crowdevelopment/convex-plaid
 ```
 
 ### 2. Add to Your Convex App
@@ -30,7 +30,7 @@ Create or update `convex/convex.config.ts`:
 
 ```typescript
 import { defineApp } from "convex/server";
-import plaid from "@ericjamescrow/convex-plaid/convex.config";
+import plaid from "@crowdevelopment/convex-plaid/convex.config";
 
 const app = defineApp();
 app.use(plaid);
@@ -73,7 +73,7 @@ Create `convex/http.ts`:
 ```typescript
 import { httpRouter } from "convex/server";
 import { components } from "./_generated/api";
-import { registerRoutes } from "@ericjamescrow/convex-plaid";
+import { registerRoutes } from "@crowdevelopment/convex-plaid";
 
 const http = httpRouter();
 
@@ -98,7 +98,7 @@ Create `convex/plaid.ts`:
 ```typescript
 import { action, query } from "./_generated/server";
 import { components } from "./_generated/api";
-import { Plaid } from "@ericjamescrow/convex-plaid";
+import { Plaid } from "@crowdevelopment/convex-plaid";
 import { v } from "convex/values";
 
 const plaidClient = new Plaid(components.plaid, {
@@ -149,7 +149,7 @@ export const getAccountsByUser = query({
 ### Plaid Client
 
 ```typescript
-import { Plaid } from "@ericjamescrow/convex-plaid";
+import { Plaid } from "@crowdevelopment/convex-plaid";
 
 const plaidClient = new Plaid(components.plaid, {
   PLAID_CLIENT_ID: "...",      // From Plaid Dashboard
@@ -204,7 +204,7 @@ Access data directly via the component's public queries:
 ```typescript
 import { query } from "./_generated/server";
 import { components } from "./_generated/api";
-import { Plaid } from "@ericjamescrow/convex-plaid";
+import { Plaid } from "@crowdevelopment/convex-plaid";
 
 const plaidClient = new Plaid(components.plaid, { /* config */ });
 
@@ -256,7 +256,7 @@ export const getUserTransactions = query({
 Main hook for connecting new bank accounts:
 
 ```tsx
-import { usePlaidLink } from "@ericjamescrow/convex-plaid/react";
+import { usePlaidLink } from "@crowdevelopment/convex-plaid/react";
 import { api } from "../convex/_generated/api";
 import { useAction } from "convex/react";
 
@@ -286,7 +286,7 @@ function ConnectBank({ userId }: { userId: string }) {
 Hook for re-authentication when credentials expire:
 
 ```tsx
-import { useUpdatePlaidLink } from "@ericjamescrow/convex-plaid/react";
+import { useUpdatePlaidLink } from "@crowdevelopment/convex-plaid/react";
 
 function ReauthBank({ plaidItemId }: { plaidItemId: string }) {
   const { open, ready, refreshToken } = useUpdatePlaidLink({
@@ -324,7 +324,7 @@ Add custom logic to webhook events:
 ```typescript
 import { httpRouter } from "convex/server";
 import { components } from "./_generated/api";
-import { registerRoutes } from "@ericjamescrow/convex-plaid";
+import { registerRoutes } from "@crowdevelopment/convex-plaid";
 
 const http = httpRouter();
 

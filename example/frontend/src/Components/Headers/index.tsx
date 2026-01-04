@@ -26,7 +26,7 @@ const Header = () => {
       {!linkSuccess ? (
         <>
           <h4 className={styles.subtitle}>
-            Testing @ericjamescrow/convex-plaid integration
+            Testing @crowdevelopment/convex-plaid integration
           </h4>
           <p className={styles.introPar}>
             This app tests the Convex Plaid component with sandbox credentials.
@@ -69,7 +69,7 @@ const Header = () => {
                 href="https://github.com/EricJamesCrow/convex-plaid"
                 target="_blank"
               >
-                @ericjamescrow/convex-plaid
+                @crowdevelopment/convex-plaid
               </InlineLink>
             </h4>
           ) : (

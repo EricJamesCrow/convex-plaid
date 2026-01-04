@@ -5,7 +5,7 @@
  */
 
 import { httpRouter } from "convex/server";
-import { registerRoutes } from "@ericjamescrow/convex-plaid";
+import { registerRoutes } from "@crowdevelopment/convex-plaid";
 import { components } from "./_generated/api";
 
 const http = httpRouter();

@@ -9,7 +9,7 @@
 
 import { v } from "convex/values";
 import { action, query } from "./_generated/server";
-import { Plaid } from "@ericjamescrow/convex-plaid";
+import { Plaid } from "@crowdevelopment/convex-plaid";
 import { components } from "./_generated/api";
 
 // =============================================================================

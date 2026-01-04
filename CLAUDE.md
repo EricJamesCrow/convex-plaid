@@ -1,4 +1,4 @@
-# @ericjamescrow/convex-plaid
+# @crowdevelopment/convex-plaid
 
 A Plaid component for Convex that provides bank account connections, transaction syncing, credit card liabilities, and recurring stream detection.
 
@@ -25,7 +25,7 @@ Host App (your convex/ folder)
 ├── http.ts               # Webhook route registration
 └── _generated/api.js     # Includes components.plaid
 
-Component (node_modules/@ericjamescrow/convex-plaid)
+Component (node_modules/@crowdevelopment/convex-plaid)
 ├── src/component/        # Internal tables, actions, queries
 ├── src/client/           # Plaid class for host app integration
 └── src/react/            # usePlaidLink React hook
@@ -41,7 +41,7 @@ Component (node_modules/@ericjamescrow/convex-plaid)
 ## Installation
 
 ```bash
-npm install @ericjamescrow/convex-plaid
+npm install @crowdevelopment/convex-plaid
 ```
 
 ## Setup
@@ -51,7 +51,7 @@ npm install @ericjamescrow/convex-plaid
 ```typescript
 // convex/convex.config.ts
 import { defineApp } from "convex/server";
-import plaid from "@ericjamescrow/convex-plaid/convex.config";
+import plaid from "@crowdevelopment/convex-plaid/convex.config";
 
 const app = defineApp();
 app.use(plaid);
@@ -90,7 +90,7 @@ The component requires explicit config since it can't access `process.env`:
 // convex/plaid.ts
 import { action, query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { Plaid } from "@ericjamescrow/convex-plaid";
+import { Plaid } from "@crowdevelopment/convex-plaid";
 import { components } from "./_generated/api";
 
 // Initialize client with config
@@ -240,7 +240,7 @@ export const deletePlaidItem = mutation({
 ### `Plaid` Class
 
 ```typescript
-import { Plaid } from "@ericjamescrow/convex-plaid";
+import { Plaid } from "@crowdevelopment/convex-plaid";
 
 const plaid = new Plaid(components.plaid, {
   PLAID_CLIENT_ID: string,
@@ -325,7 +325,7 @@ Access via `plaid.api.*` in query/mutation handlers:
 ## React Hooks
 
 ```typescript
-import { usePlaidLink, useUpdatePlaidLink } from "@ericjamescrow/convex-plaid/react";
+import { usePlaidLink, useUpdatePlaidLink } from "@crowdevelopment/convex-plaid/react";
 ```
 
 ### `usePlaidLink`
@@ -333,7 +333,7 @@ import { usePlaidLink, useUpdatePlaidLink } from "@ericjamescrow/convex-plaid/re
 Main hook for connecting new bank accounts:
 
 ```tsx
-import { usePlaidLink } from "@ericjamescrow/convex-plaid/react";
+import { usePlaidLink } from "@crowdevelopment/convex-plaid/react";
 import { api } from "../convex/_generated/api";
 
 function ConnectBank({ userId }: { userId: string }) {
@@ -363,7 +363,7 @@ function ConnectBank({ userId }: { userId: string }) {
 Hook for re-authenticating when credentials expire:
 
 ```tsx
-import { useUpdatePlaidLink } from "@ericjamescrow/convex-plaid/react";
+import { useUpdatePlaidLink } from "@crowdevelopment/convex-plaid/react";
 
 function ReauthBank({ plaidItemId }: { plaidItemId: string }) {
   const { open, ready, refreshToken } = useUpdatePlaidLink({
@@ -418,7 +418,7 @@ interface UsePlaidLinkResult {
 ```typescript
 // convex/http.ts
 import { httpRouter } from "convex/server";
-import { registerRoutes } from "@ericjamescrow/convex-plaid";
+import { registerRoutes } from "@crowdevelopment/convex-plaid";
 import { components } from "./_generated/api";
 
 const http = httpRouter();
@@ -736,7 +736,7 @@ When item status is `needs_reauth`:
 
 ## Publishing to npm
 
-This package is published to the public npm registry at `@ericjamescrow/convex-plaid`.
+This package is published to the public npm registry at `@crowdevelopment/convex-plaid`.
 
 ### Setup npm Account
 
@@ -765,7 +765,7 @@ The GitHub Actions workflow (`.github/workflows/publish.yml`) automatically publ
 
 1. **Create a release** on GitHub → triggers workflow
 2. Workflow runs: test → typecheck → build → publish
-3. Package available at `npm install @ericjamescrow/convex-plaid`
+3. Package available at `npm install @crowdevelopment/convex-plaid`
 
 ### Manual Publishing
 
