@@ -1,0 +1,64 @@
+.itemsContainer {
+  padding: 16px 0;
+}
+
+.itemsList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.itemCard {
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.itemHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.status {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+
+  &[data-status="active"] {
+    background: #d4edda;
+    color: #155724;
+  }
+
+  &[data-status="pending"] {
+    background: #fff3cd;
+    color: #856404;
+  }
+
+  &[data-status="syncing"] {
+    background: #cce5ff;
+    color: #004085;
+  }
+
+  &[data-status="error"],
+  &[data-status="needs_reauth"] {
+    background: #f8d7da;
+    color: #721c24;
+  }
+}
+
+.itemDetails {
+  p {
+    margin: 4px 0;
+    font-size: 14px;
+    color: #495057;
+  }
+}
+
+.error {
+  color: #dc3545 !important;
+}

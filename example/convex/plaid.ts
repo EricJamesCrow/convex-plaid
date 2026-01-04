@@ -34,7 +34,7 @@ function getPlaid(): Plaid {
       PLAID_CLIENT_ID: process.env.PLAID_CLIENT_ID!,
       PLAID_SECRET: process.env.PLAID_SECRET!,
       PLAID_ENV: process.env.PLAID_ENV ?? "sandbox",
-      ENCRYPTION_KEY: process.env.ENCRYPTION_KEY!,
+      ENCRYPTION_KEY: process.env.PLAID_ENCRYPTION_KEY!,
     });
   }
   return _plaid;
@@ -51,16 +51,19 @@ function getPlaid(): Plaid {
  */
 export const createLinkToken = action({
   args: {
+    userId: v.optional(v.string()),
     products: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
-    // Get authenticated user (your auth implementation)
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("Not authenticated");
+    // Use provided userId, or fall back to authenticated user
+    let userId = args.userId;
+    if (!userId) {
+      const identity = await ctx.auth.getUserIdentity();
+      if (!identity) {
+        throw new Error("Not authenticated and no userId provided");
+      }
+      userId = identity.subject;
     }
-
-    const userId = identity.subject;
 
     return await getPlaid().createLinkToken(ctx, {
       userId,
@@ -79,14 +82,18 @@ export const createLinkToken = action({
 export const exchangePublicToken = action({
   args: {
     publicToken: v.string(),
+    userId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("Not authenticated");
+    // Use provided userId, or fall back to authenticated user
+    let userId = args.userId;
+    if (!userId) {
+      const identity = await ctx.auth.getUserIdentity();
+      if (!identity) {
+        throw new Error("Not authenticated and no userId provided");
+      }
+      userId = identity.subject;
     }
-
-    const userId = identity.subject;
 
     // Exchange token and create plaidItem
     const result = await getPlaid().exchangePublicToken(ctx, {
@@ -225,3 +232,53 @@ export const getMyLiabilities = query({
     });
   },
 });
+
+// =============================================================================
+// PUBLIC QUERIES (Take userId as parameter - for apps without ctx.auth)
+// =============================================================================
+
+/**
+ * Get all Plaid items for a specific user.
+ */
+export const getItemsByUser = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(getPlaid().api.getItemsByUser, args);
+  },
+});
+
+/**
+ * Get all accounts for a specific user.
+ */
+export const getAccountsByUser = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(getPlaid().api.getAccountsByUser, args);
+  },
+});
+
+/**
+ * Get transactions for a specific user with optional filtering.
+ */
+export const getTransactionsByUser = query({
+  args: {
+    userId: v.string(),
+    startDate: v.optional(v.string()),
+    endDate: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(getPlaid().api.getTransactionsByUser, args);
+  },
+});
+
+/**
+ * Get credit card liabilities for a specific user.
+ */
+export const getLiabilitiesByUser = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(getPlaid().api.getLiabilitiesByUser, args);
+  },
+});
+
