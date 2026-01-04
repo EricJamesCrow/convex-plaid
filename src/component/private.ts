@@ -289,6 +289,10 @@ export const updateItemStatus = internalMutation({
     const item = await getPlaidItemById(ctx, args.plaidItemId);
 
     if (item) {
+      // Skip update for items being deleted - prevents race with cleanup
+      if (item.status === "deleting") {
+        return null;
+      }
       await ctx.db.patch(item._id, {
         status: args.status as any,
         syncError: args.syncError,
@@ -334,6 +338,10 @@ export const updateItemCursor = internalMutation({
     const item = await getPlaidItemById(ctx, args.plaidItemId);
 
     if (item) {
+      // Skip update for items being deleted - prevents race with cleanup
+      if (item.status === "deleting") {
+        return null;
+      }
       await ctx.db.patch(item._id, {
         cursor: args.cursor,
         status: "active",
@@ -387,6 +395,11 @@ export const acquireSyncLock = internalMutation({
     const item = await getPlaidItemById(ctx, args.plaidItemId);
     if (!item) {
       return { acquired: false as const, reason: "Item not found" };
+    }
+
+    // Reject lock for items being deleted - prevents race with cleanup
+    if (item.status === "deleting") {
+      return { acquired: false as const, reason: "Item is being deleted" };
     }
 
     const now = Date.now();
@@ -468,6 +481,11 @@ export const completeSyncWithVersion = internalMutation({
       };
     }
 
+    // Reject completion for items being deleted - prevents race with cleanup
+    if (item.status === "deleting") {
+      return { success: false, reason: "Item is being deleted" };
+    }
+
     // Complete the sync
     await ctx.db.patch(item._id, {
       cursor: args.cursor,
@@ -498,6 +516,10 @@ export const releaseSyncLock = internalMutation({
 
     // Only release if we still hold the lock
     if (item.syncVersion === args.syncVersion) {
+      // Skip update for items being deleted - prevents race with cleanup
+      if (item.status === "deleting") {
+        return null;
+      }
       await ctx.db.patch(item._id, {
         status: args.status as any,
         syncError: args.syncError,
@@ -685,6 +707,12 @@ export const bulkUpsertAccounts = internalMutation({
     updated: v.number(),
   }),
   handler: async (ctx, args) => {
+    // Check if item is being deleted before inserting any data - prevents orphan records
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item || item.status === "deleting") {
+      return { created: 0, updated: 0 };
+    }
+
     const now = Date.now();
     let created = 0;
     let updated = 0;
@@ -765,6 +793,12 @@ export const bulkUpsertTransactions = internalMutation({
     removed: v.number(),
   }),
   handler: async (ctx, args) => {
+    // Check if item is being deleted before inserting any data - prevents orphan records
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item || item.status === "deleting") {
+      return { added: 0, modified: 0, removed: 0 };
+    }
+
     const now = Date.now();
 
     // OPTIMIZATION: Batch query - fetch all existing transactions for this item upfront
@@ -847,6 +881,12 @@ export const upsertCreditCardLiability = internalMutation({
   },
   returns: v.string(),
   handler: async (ctx, args) => {
+    // Check if item is being deleted before inserting any data - prevents orphan records
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item || item.status === "deleting") {
+      return "";
+    }
+
     const now = Date.now();
 
     const result = await safeUpsertWithDedup(
@@ -1378,6 +1418,12 @@ export const bulkUpsertRecurringStreams = internalMutation({
     updated: v.number(),
   }),
   handler: async (ctx, args) => {
+    // Check if item is being deleted before inserting any data - prevents orphan records
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item || item.status === "deleting") {
+      return { created: 0, updated: 0 };
+    }
+
     const now = Date.now();
     let created = 0;
     let updated = 0;
@@ -1534,6 +1580,12 @@ export const upsertMortgageLiability = internalMutation({
   },
   returns: v.string(),
   handler: async (ctx, args) => {
+    // Check if item is being deleted before inserting any data - prevents orphan records
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item || item.status === "deleting") {
+      return "";
+    }
+
     const now = Date.now();
 
     const result = await safeUpsertWithDedup(
@@ -1713,6 +1765,12 @@ export const upsertStudentLoanLiability = internalMutation({
   },
   returns: v.string(),
   handler: async (ctx, args) => {
+    // Check if item is being deleted before inserting any data - prevents orphan records
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item || item.status === "deleting") {
+      return "";
+    }
+
     const now = Date.now();
 
     const result = await safeUpsertWithDedup(
