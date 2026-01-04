@@ -30,3 +30,6 @@ npm-debug.log*
 # References (not part of the package)
 references/
 coverage/
+
+# Example app generated files (users generate their own)
+example/convex/_generated/
