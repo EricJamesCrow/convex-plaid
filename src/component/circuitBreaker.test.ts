@@ -14,8 +14,8 @@ import {
   resetCircuit,
   shouldBlockRequest,
   CIRCUIT_CONFIG,
-  CircuitState,
-} from "./circuitBreaker";
+  type CircuitState,
+} from "./circuitBreaker.js";
 
 // Helper to create mock ActionCtx
 function createMockCtx(itemData: Record<string, unknown> | null = null) {

@@ -12,8 +12,8 @@ import {
   requiresReauth,
   isPermanent,
   formatErrorForLog,
-  PlaidSyncError,
-} from "./errors";
+  type PlaidSyncError,
+} from "./errors.js";
 
 describe("Error Handling Module", () => {
   describe("categorizeError", () => {

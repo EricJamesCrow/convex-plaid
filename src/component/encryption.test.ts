@@ -12,7 +12,7 @@ import {
   isEncryptedToken,
   TokenDecryptionError,
   DecryptionErrorCode,
-} from "./encryption";
+} from "./encryption.js";
 
 // Valid 32-byte key encoded as base64 (256 bits for A256GCM)
 const VALID_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
