@@ -33,7 +33,8 @@ export default defineSchema({
       v.literal("syncing"),
       v.literal("active"),
       v.literal("error"),
-      v.literal("needs_reauth")
+      v.literal("needs_reauth"),
+      v.literal("deleting") // Item is being deleted (cascading delete in progress)
     ),
     syncError: v.optional(v.string()), // Error message from last sync attempt
     createdAt: v.number(), // Unix timestamp

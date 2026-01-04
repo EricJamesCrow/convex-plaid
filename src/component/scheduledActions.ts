@@ -49,15 +49,15 @@ const plaidConfigValidator = v.object({
 // =============================================================================
 
 /**
- * Sync all active Plaid items.
+ * Sync all active Plaid items using fan-out pattern.
  *
  * Called by host app cron jobs to keep data fresh.
- * Syncs transactions for all items in 'active' status.
- *
- * Continues on per-item errors to ensure all items are attempted.
+ * Schedules individual sync actions for each item in parallel,
+ * providing isolation (one failure doesn't block others) and
+ * better performance (parallel execution vs sequential).
  *
  * @param plaidConfig - Plaid API credentials
- * @returns Summary of sync results
+ * @returns Number of items scheduled for sync
  */
 export const syncAllActiveItems = internalAction({
   args: {
@@ -72,20 +72,12 @@ export const syncAllActiveItems = internalAction({
     ),
   },
   returns: v.object({
-    totalItems: v.number(),
-    synced: v.number(),
-    errors: v.number(),
-    skipped: v.number(),
+    scheduled: v.number(),
   }),
-  handler: async (ctx, args): Promise<{
-    totalItems: number;
-    synced: number;
-    errors: number;
-    skipped: number;
-  }> => {
+  handler: async (ctx, args): Promise<{ scheduled: number }> => {
     const syncType = args.syncType ?? "transactions";
 
-    console.log(`[Plaid Cron] Starting ${syncType} sync for all active items...`);
+    console.log(`[Plaid Cron] Scheduling ${syncType} sync for all active items...`);
 
     // Get all active items
     const items: Array<{
@@ -95,92 +87,127 @@ export const syncAllActiveItems = internalAction({
       cursor?: string;
     }> = await ctx.runQuery(internal.private.getAllActiveItems, {});
 
-    console.log(`[Plaid Cron] Found ${items.length} active items`);
+    console.log(`[Plaid Cron] Found ${items.length} active items, scheduling parallel syncs...`);
 
-    let synced = 0;
-    let errors = 0;
-    let skipped = 0;
-
+    // Fan-out: Schedule individual syncs for each item (runs in parallel)
     for (const item of items) {
-      try {
-        // Decrypt access token
-        const accessToken = await decryptToken(
-          item.accessToken,
-          args.plaidConfig.encryptionKey
-        );
-
-        const plaidClient = initPlaidClient(
-          args.plaidConfig.plaidClientId,
-          args.plaidConfig.plaidSecret,
-          args.plaidConfig.plaidEnv
-        );
-
-        // Sync transactions
-        if (syncType === "transactions" || syncType === "all") {
-          await syncItemTransactions(ctx, item, accessToken, plaidClient);
-        }
-
-        // Sync liabilities
-        if (syncType === "liabilities" || syncType === "all") {
-          await syncItemLiabilities(
-            ctx,
-            item._id,
-            args.plaidConfig.plaidClientId,
-            args.plaidConfig.plaidSecret,
-            args.plaidConfig.plaidEnv,
-            args.plaidConfig.encryptionKey
-          );
-        }
-
-        // Sync recurring streams
-        if (syncType === "recurring" || syncType === "all") {
-          await syncItemRecurringStreams(
-            ctx,
-            item._id,
-            args.plaidConfig.plaidClientId,
-            args.plaidConfig.plaidSecret,
-            args.plaidConfig.plaidEnv,
-            args.plaidConfig.encryptionKey
-          );
-        }
-
-        synced++;
-        console.log(`[Plaid Cron] Synced item ${item._id}`);
-      } catch (error: unknown) {
-        const plaidError = categorizeError(error);
-        console.error(
-          `[Plaid Cron] Error syncing item ${item._id}: ${formatErrorForLog(plaidError)}`
-        );
-
-        // Update item status based on error
-        if (requiresReauth(plaidError)) {
-          await ctx.runMutation(internal.private.updateItemStatus, {
-            plaidItemId: item._id,
-            status: "needs_reauth",
-            syncError: plaidError.message,
-          });
-        } else {
-          await ctx.runMutation(internal.private.updateItemStatus, {
-            plaidItemId: item._id,
-            status: "error",
-            syncError: plaidError.message,
-          });
-        }
-
-        errors++;
-      }
+      await ctx.scheduler.runAfter(0, internal.scheduledActions.syncSingleItem, {
+        plaidItemId: item._id,
+        plaidConfig: args.plaidConfig,
+        syncType,
+      });
     }
 
-    console.log(
-      `[Plaid Cron] Sync complete: ${synced} synced, ${errors} errors, ${skipped} skipped`
-    );
+    console.log(`[Plaid Cron] Scheduled ${items.length} item syncs`);
 
-    return {
-      totalItems: items.length,
-      synced,
-      errors,
-      skipped,
-    };
+    return { scheduled: items.length };
+  },
+});
+
+/**
+ * Sync a single Plaid item.
+ *
+ * This is the worker action scheduled by syncAllActiveItems.
+ * Each item runs in isolation - errors here don't affect other items.
+ */
+export const syncSingleItem = internalAction({
+  args: {
+    plaidItemId: v.string(),
+    plaidConfig: plaidConfigValidator,
+    syncType: v.union(
+      v.literal("transactions"),
+      v.literal("liabilities"),
+      v.literal("recurring"),
+      v.literal("all")
+    ),
+  },
+  returns: v.object({
+    success: v.boolean(),
+    error: v.optional(v.string()),
+  }),
+  handler: async (ctx, args): Promise<{ success: boolean; error?: string }> => {
+    try {
+      // Get item details
+      const item: {
+        _id: string;
+        accessToken: string;
+        userId: string;
+        cursor?: string;
+      } | null = await ctx.runQuery(internal.private.getItemWithToken, {
+        plaidItemId: args.plaidItemId,
+      });
+
+      if (!item) {
+        console.warn(`[Plaid Cron] Item ${args.plaidItemId} not found, skipping`);
+        return { success: false, error: "Item not found" };
+      }
+
+      // Decrypt access token
+      const accessToken = await decryptToken(
+        item.accessToken,
+        args.plaidConfig.encryptionKey
+      );
+
+      const plaidClient = initPlaidClient(
+        args.plaidConfig.plaidClientId,
+        args.plaidConfig.plaidSecret,
+        args.plaidConfig.plaidEnv
+      );
+
+      // Sync transactions
+      if (args.syncType === "transactions" || args.syncType === "all") {
+        await syncItemTransactions(ctx, item, accessToken, plaidClient);
+      }
+
+      // Sync liabilities
+      if (args.syncType === "liabilities" || args.syncType === "all") {
+        await syncItemLiabilities(
+          ctx,
+          item._id,
+          args.plaidConfig.plaidClientId,
+          args.plaidConfig.plaidSecret,
+          args.plaidConfig.plaidEnv,
+          args.plaidConfig.encryptionKey
+        );
+      }
+
+      // Sync recurring streams
+      if (args.syncType === "recurring" || args.syncType === "all") {
+        await syncItemRecurringStreams(
+          ctx,
+          item._id,
+          args.plaidConfig.plaidClientId,
+          args.plaidConfig.plaidSecret,
+          args.plaidConfig.plaidEnv,
+          args.plaidConfig.encryptionKey
+        );
+      }
+
+      console.log(`[Plaid Cron] Synced item ${args.plaidItemId}`);
+      return { success: true };
+    } catch (error: unknown) {
+      const plaidError = categorizeError(error);
+      console.error(
+        `[Plaid Cron] Error syncing item ${args.plaidItemId}: ${formatErrorForLog(plaidError)}`
+      );
+
+      // Update item status based on error
+      if (requiresReauth(plaidError)) {
+        await ctx.runMutation(internal.private.updateItemStatus, {
+          plaidItemId: args.plaidItemId,
+          status: "needs_reauth",
+          syncError: plaidError.message,
+        });
+      } else {
+        await ctx.runMutation(internal.private.updateItemStatus, {
+          plaidItemId: args.plaidItemId,
+          status: "error",
+          syncError: plaidError.message,
+        });
+      }
+
+      return { success: false, error: plaidError.message };
+    }
   },
 });
 
@@ -188,6 +215,7 @@ export const syncAllActiveItems = internalAction({
  * Sync items that need refresh (haven't synced in X hours).
  *
  * More targeted than syncAllActiveItems - only syncs stale items.
+ * Uses fan-out pattern for parallel, isolated execution.
  */
 export const syncStaleItems = internalAction({
   args: {
@@ -195,19 +223,13 @@ export const syncStaleItems = internalAction({
     maxAgeHours: v.optional(v.number()), // Default 24 hours
   },
   returns: v.object({
-    totalItems: v.number(),
-    synced: v.number(),
-    errors: v.number(),
+    scheduled: v.number(),
   }),
-  handler: async (ctx, args): Promise<{
-    totalItems: number;
-    synced: number;
-    errors: number;
-  }> => {
+  handler: async (ctx, args): Promise<{ scheduled: number }> => {
     const maxAgeHours = args.maxAgeHours ?? 24;
 
     console.log(
-      `[Plaid Cron] Syncing items not updated in ${maxAgeHours} hours...`
+      `[Plaid Cron] Scheduling sync for items not updated in ${maxAgeHours} hours...`
     );
 
     // Get items needing sync
@@ -220,61 +242,20 @@ export const syncStaleItems = internalAction({
       maxAgeHours,
     });
 
-    console.log(`[Plaid Cron] Found ${items.length} stale items`);
+    console.log(`[Plaid Cron] Found ${items.length} stale items, scheduling parallel syncs...`);
 
-    let synced = 0;
-    let errors = 0;
-
+    // Fan-out: Schedule individual syncs for each stale item
     for (const item of items) {
-      try {
-        // Decrypt access token
-        const accessToken = await decryptToken(
-          item.accessToken,
-          args.plaidConfig.encryptionKey
-        );
-
-        const plaidClient = initPlaidClient(
-          args.plaidConfig.plaidClientId,
-          args.plaidConfig.plaidSecret,
-          args.plaidConfig.plaidEnv
-        );
-
-        await syncItemTransactions(ctx, item, accessToken, plaidClient);
-
-        synced++;
-        console.log(`[Plaid Cron] Synced stale item ${item._id}`);
-      } catch (error: unknown) {
-        const plaidError = categorizeError(error);
-        console.error(
-          `[Plaid Cron] Error syncing stale item ${item._id}: ${formatErrorForLog(plaidError)}`
-        );
-
-        // Update item status
-        if (requiresReauth(plaidError)) {
-          await ctx.runMutation(internal.private.updateItemStatus, {
-            plaidItemId: item._id,
-            status: "needs_reauth",
-            syncError: plaidError.message,
-          });
-        } else {
-          await ctx.runMutation(internal.private.updateItemStatus, {
-            plaidItemId: item._id,
-            status: "error",
-            syncError: plaidError.message,
-          });
-        }
-
-        errors++;
-      }
+      await ctx.scheduler.runAfter(0, internal.scheduledActions.syncSingleItem, {
+        plaidItemId: item._id,
+        plaidConfig: args.plaidConfig,
+        syncType: "transactions" as const,
+      });
     }
 
-    console.log(`[Plaid Cron] Stale sync complete: ${synced} synced, ${errors} errors`);
+    console.log(`[Plaid Cron] Scheduled ${items.length} stale item syncs`);
 
-    return {
-      totalItems: items.length,
-      synced,
-      errors,
-    };
+    return { scheduled: items.length };
   },
 });
 

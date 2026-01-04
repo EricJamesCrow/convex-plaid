@@ -66,7 +66,7 @@ const Header = () => {
             <h4 className={styles.subtitle}>
               Congrats! You've successfully connected a bank account using{" "}
               <InlineLink
-                href="https://github.com/EricJamesCrow/convex-plaid"
+                href="https://www.npmjs.com/package/@crowdevelopment/convex-plaid"
                 target="_blank"
               >
                 @crowdevelopment/convex-plaid
