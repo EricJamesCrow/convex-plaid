@@ -650,9 +650,34 @@ export const getMortgageLiabilitiesByUser = query({
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return mortgages.map((m) => ({
-      ...m,
       _id: String(m._id),
+      userId: m.userId,
+      plaidItemId: m.plaidItemId,
+      accountId: m.accountId,
+      accountNumber: m.accountNumber,
+      loanTerm: m.loanTerm,
+      loanTypeDescription: m.loanTypeDescription,
+      originationDate: m.originationDate,
+      maturityDate: m.maturityDate,
+      interestRatePercentage: m.interestRatePercentage,
+      interestRateType: m.interestRateType,
+      lastPaymentAmount: m.lastPaymentAmount,
+      lastPaymentDate: m.lastPaymentDate,
+      nextMonthlyPayment: m.nextMonthlyPayment,
+      nextPaymentDueDate: m.nextPaymentDueDate,
+      originationPrincipalAmount: m.originationPrincipalAmount,
+      currentLateFee: m.currentLateFee,
+      escrowBalance: m.escrowBalance,
+      pastDueAmount: m.pastDueAmount,
+      ytdInterestPaid: m.ytdInterestPaid,
+      ytdPrincipalPaid: m.ytdPrincipalPaid,
+      hasPmi: m.hasPmi,
+      hasPrepaymentPenalty: m.hasPrepaymentPenalty,
+      propertyAddress: m.propertyAddress,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
     }));
   },
 });
@@ -671,9 +696,34 @@ export const getMortgageLiabilityByAccount = query({
 
     if (!mortgage) return null;
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return {
-      ...mortgage,
       _id: String(mortgage._id),
+      userId: mortgage.userId,
+      plaidItemId: mortgage.plaidItemId,
+      accountId: mortgage.accountId,
+      accountNumber: mortgage.accountNumber,
+      loanTerm: mortgage.loanTerm,
+      loanTypeDescription: mortgage.loanTypeDescription,
+      originationDate: mortgage.originationDate,
+      maturityDate: mortgage.maturityDate,
+      interestRatePercentage: mortgage.interestRatePercentage,
+      interestRateType: mortgage.interestRateType,
+      lastPaymentAmount: mortgage.lastPaymentAmount,
+      lastPaymentDate: mortgage.lastPaymentDate,
+      nextMonthlyPayment: mortgage.nextMonthlyPayment,
+      nextPaymentDueDate: mortgage.nextPaymentDueDate,
+      originationPrincipalAmount: mortgage.originationPrincipalAmount,
+      currentLateFee: mortgage.currentLateFee,
+      escrowBalance: mortgage.escrowBalance,
+      pastDueAmount: mortgage.pastDueAmount,
+      ytdInterestPaid: mortgage.ytdInterestPaid,
+      ytdPrincipalPaid: mortgage.ytdPrincipalPaid,
+      hasPmi: mortgage.hasPmi,
+      hasPrepaymentPenalty: mortgage.hasPrepaymentPenalty,
+      propertyAddress: mortgage.propertyAddress,
+      createdAt: mortgage.createdAt,
+      updatedAt: mortgage.updatedAt,
     };
   },
 });
@@ -750,9 +800,37 @@ export const getStudentLoanLiabilitiesByUser = query({
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return studentLoans.map((sl) => ({
-      ...sl,
       _id: String(sl._id),
+      userId: sl.userId,
+      plaidItemId: sl.plaidItemId,
+      accountId: sl.accountId,
+      accountNumber: sl.accountNumber,
+      loanName: sl.loanName,
+      guarantor: sl.guarantor,
+      sequenceNumber: sl.sequenceNumber,
+      disbursementDates: sl.disbursementDates,
+      originationDate: sl.originationDate,
+      expectedPayoffDate: sl.expectedPayoffDate,
+      lastStatementIssueDate: sl.lastStatementIssueDate,
+      interestRatePercentage: sl.interestRatePercentage,
+      lastPaymentAmount: sl.lastPaymentAmount,
+      lastPaymentDate: sl.lastPaymentDate,
+      minimumPaymentAmount: sl.minimumPaymentAmount,
+      nextPaymentDueDate: sl.nextPaymentDueDate,
+      paymentReferenceNumber: sl.paymentReferenceNumber,
+      originationPrincipalAmount: sl.originationPrincipalAmount,
+      outstandingInterestAmount: sl.outstandingInterestAmount,
+      lastStatementBalance: sl.lastStatementBalance,
+      ytdInterestPaid: sl.ytdInterestPaid,
+      ytdPrincipalPaid: sl.ytdPrincipalPaid,
+      isOverdue: sl.isOverdue,
+      loanStatus: sl.loanStatus,
+      repaymentPlan: sl.repaymentPlan,
+      servicerAddress: sl.servicerAddress,
+      createdAt: sl.createdAt,
+      updatedAt: sl.updatedAt,
     }));
   },
 });
@@ -771,9 +849,37 @@ export const getStudentLoanLiabilityByAccount = query({
 
     if (!studentLoan) return null;
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return {
-      ...studentLoan,
       _id: String(studentLoan._id),
+      userId: studentLoan.userId,
+      plaidItemId: studentLoan.plaidItemId,
+      accountId: studentLoan.accountId,
+      accountNumber: studentLoan.accountNumber,
+      loanName: studentLoan.loanName,
+      guarantor: studentLoan.guarantor,
+      sequenceNumber: studentLoan.sequenceNumber,
+      disbursementDates: studentLoan.disbursementDates,
+      originationDate: studentLoan.originationDate,
+      expectedPayoffDate: studentLoan.expectedPayoffDate,
+      lastStatementIssueDate: studentLoan.lastStatementIssueDate,
+      interestRatePercentage: studentLoan.interestRatePercentage,
+      lastPaymentAmount: studentLoan.lastPaymentAmount,
+      lastPaymentDate: studentLoan.lastPaymentDate,
+      minimumPaymentAmount: studentLoan.minimumPaymentAmount,
+      nextPaymentDueDate: studentLoan.nextPaymentDueDate,
+      paymentReferenceNumber: studentLoan.paymentReferenceNumber,
+      originationPrincipalAmount: studentLoan.originationPrincipalAmount,
+      outstandingInterestAmount: studentLoan.outstandingInterestAmount,
+      lastStatementBalance: studentLoan.lastStatementBalance,
+      ytdInterestPaid: studentLoan.ytdInterestPaid,
+      ytdPrincipalPaid: studentLoan.ytdPrincipalPaid,
+      isOverdue: studentLoan.isOverdue,
+      loanStatus: studentLoan.loanStatus,
+      repaymentPlan: studentLoan.repaymentPlan,
+      servicerAddress: studentLoan.servicerAddress,
+      createdAt: studentLoan.createdAt,
+      updatedAt: studentLoan.updatedAt,
     };
   },
 });
@@ -810,9 +916,19 @@ export const getMerchantEnrichment = query({
 
     if (!merchant) return null;
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return {
-      ...merchant,
       _id: String(merchant._id),
+      merchantId: merchant.merchantId,
+      merchantName: merchant.merchantName,
+      logoUrl: merchant.logoUrl,
+      categoryPrimary: merchant.categoryPrimary,
+      categoryDetailed: merchant.categoryDetailed,
+      categoryIconUrl: merchant.categoryIconUrl,
+      website: merchant.website,
+      phoneNumber: merchant.phoneNumber,
+      confidenceLevel: merchant.confidenceLevel,
+      lastEnriched: merchant.lastEnriched,
     };
   },
 });
@@ -951,9 +1067,28 @@ export const getRecurringStreamsByUser = query({
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return streams.map((stream) => ({
-      ...stream,
       _id: String(stream._id),
+      userId: stream.userId,
+      plaidItemId: stream.plaidItemId,
+      streamId: stream.streamId,
+      accountId: stream.accountId,
+      description: stream.description,
+      merchantName: stream.merchantName,
+      averageAmount: stream.averageAmount,
+      lastAmount: stream.lastAmount,
+      isoCurrencyCode: stream.isoCurrencyCode,
+      frequency: stream.frequency,
+      status: stream.status,
+      isActive: stream.isActive,
+      type: stream.type,
+      category: stream.category,
+      firstDate: stream.firstDate,
+      lastDate: stream.lastDate,
+      predictedNextDate: stream.predictedNextDate,
+      createdAt: stream.createdAt,
+      updatedAt: stream.updatedAt,
     }));
   },
 });
@@ -970,9 +1105,28 @@ export const getRecurringStreamsByItem = query({
       .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
       .collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return streams.map((stream) => ({
-      ...stream,
       _id: String(stream._id),
+      userId: stream.userId,
+      plaidItemId: stream.plaidItemId,
+      streamId: stream.streamId,
+      accountId: stream.accountId,
+      description: stream.description,
+      merchantName: stream.merchantName,
+      averageAmount: stream.averageAmount,
+      lastAmount: stream.lastAmount,
+      isoCurrencyCode: stream.isoCurrencyCode,
+      frequency: stream.frequency,
+      status: stream.status,
+      isActive: stream.isActive,
+      type: stream.type,
+      category: stream.category,
+      firstDate: stream.firstDate,
+      lastDate: stream.lastDate,
+      predictedNextDate: stream.predictedNextDate,
+      createdAt: stream.createdAt,
+      updatedAt: stream.updatedAt,
     }));
   },
 });
@@ -995,9 +1149,28 @@ export const getActiveSubscriptions = query({
       (s) => s.status === "MATURE" && s.type === "outflow" && s.isActive
     );
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return subscriptions.map((stream) => ({
-      ...stream,
       _id: String(stream._id),
+      userId: stream.userId,
+      plaidItemId: stream.plaidItemId,
+      streamId: stream.streamId,
+      accountId: stream.accountId,
+      description: stream.description,
+      merchantName: stream.merchantName,
+      averageAmount: stream.averageAmount,
+      lastAmount: stream.lastAmount,
+      isoCurrencyCode: stream.isoCurrencyCode,
+      frequency: stream.frequency,
+      status: stream.status,
+      isActive: stream.isActive,
+      type: stream.type,
+      category: stream.category,
+      firstDate: stream.firstDate,
+      lastDate: stream.lastDate,
+      predictedNextDate: stream.predictedNextDate,
+      createdAt: stream.createdAt,
+      updatedAt: stream.updatedAt,
     }));
   },
 });
@@ -1020,9 +1193,28 @@ export const getRecurringIncome = query({
       (s) => s.status === "MATURE" && s.type === "inflow" && s.isActive
     );
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return income.map((stream) => ({
-      ...stream,
       _id: String(stream._id),
+      userId: stream.userId,
+      plaidItemId: stream.plaidItemId,
+      streamId: stream.streamId,
+      accountId: stream.accountId,
+      description: stream.description,
+      merchantName: stream.merchantName,
+      averageAmount: stream.averageAmount,
+      lastAmount: stream.lastAmount,
+      isoCurrencyCode: stream.isoCurrencyCode,
+      frequency: stream.frequency,
+      status: stream.status,
+      isActive: stream.isActive,
+      type: stream.type,
+      category: stream.category,
+      firstDate: stream.firstDate,
+      lastDate: stream.lastDate,
+      predictedNextDate: stream.predictedNextDate,
+      createdAt: stream.createdAt,
+      updatedAt: stream.updatedAt,
     }));
   },
 });
@@ -1151,9 +1343,21 @@ export const getSyncLogsByItem = query({
       ? await queryBuilder.take(args.limit)
       : await queryBuilder.collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return logs.map((log) => ({
-      ...log,
       _id: String(log._id),
+      plaidItemId: log.plaidItemId,
+      userId: log.userId,
+      syncType: log.syncType,
+      trigger: log.trigger,
+      startedAt: log.startedAt,
+      completedAt: log.completedAt,
+      durationMs: log.durationMs,
+      status: log.status,
+      result: log.result,
+      errorCode: log.errorCode,
+      errorMessage: log.errorMessage,
+      retryCount: log.retryCount,
     }));
   },
 });
@@ -1178,9 +1382,21 @@ export const getSyncLogsByUser = query({
       ? await queryBuilder.take(args.limit)
       : await queryBuilder.collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return logs.map((log) => ({
-      ...log,
       _id: String(log._id),
+      plaidItemId: log.plaidItemId,
+      userId: log.userId,
+      syncType: log.syncType,
+      trigger: log.trigger,
+      startedAt: log.startedAt,
+      completedAt: log.completedAt,
+      durationMs: log.durationMs,
+      status: log.status,
+      result: log.result,
+      errorCode: log.errorCode,
+      errorMessage: log.errorMessage,
+      retryCount: log.retryCount,
     }));
   },
 });
@@ -1294,9 +1510,16 @@ export const getInstitution = query({
 
     if (!institution) return null;
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return {
-      ...institution,
       _id: String(institution._id),
+      institutionId: institution.institutionId,
+      name: institution.name,
+      logo: institution.logo,
+      primaryColor: institution.primaryColor,
+      url: institution.url,
+      products: institution.products,
+      lastFetched: institution.lastFetched,
     };
   },
 });
@@ -1311,9 +1534,16 @@ export const getAllInstitutions = query({
   handler: async (ctx) => {
     const institutions = await ctx.db.query("plaidInstitutions").collect();
 
+    // Explicitly map fields to avoid including _creationTime from Convex
     return institutions.map((inst) => ({
-      ...inst,
       _id: String(inst._id),
+      institutionId: inst.institutionId,
+      name: inst.name,
+      logo: inst.logo,
+      primaryColor: inst.primaryColor,
+      url: inst.url,
+      products: inst.products,
+      lastFetched: inst.lastFetched,
     }));
   },
 });
