@@ -1,7 +1,7 @@
 {
   "name": "@crowdevelopment/convex-plaid",
   "description": "A Plaid component for Convex - bank accounts, transactions, and liabilities.",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -92,8 +92,8 @@
     "@inquirer/prompts": "^7.2.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
-    "jose": "^5.0.0",
-    "plaid": "^28.0.0"
+    "jose": "^6.0.0",
+    "plaid": "^41.0.0"
   },
   "types": "./dist/client/index.d.ts",
   "module": "./dist/client/index.js"
