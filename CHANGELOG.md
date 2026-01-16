@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Auth validation patterns
   - Ownership verification examples
   - Common security pitfalls
-- **`docs/examples/secure-wrappers.md`** - Complete working examples of:
+- **`example/convex/secureWrappers.ts`** - Complete working examples of:
   - Secure query wrappers with auth
   - Secure mutation wrappers with ownership checks
   - Secure action wrappers with validation
@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Missing validation anti-patterns
   - Dangerous query patterns
   - How to fix each anti-pattern
-- **`docs/research/component-auth-verification.md`** - Research findings documenting that `ctx.auth` is unavailable in Convex components
+- **`docs/auth-support-findings.md`** - Research findings documenting that `ctx.auth` is unavailable in Convex components
 
 #### Testing
 - Comprehensive test suite for security helpers (`src/client/helpers.test.ts`)
@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provided helper utilities to simplify secure implementation in host apps
 - Added comprehensive examples showing how to prevent unauthorized access
 - Documented anti-patterns that lead to data leaks and how to avoid them
+
+### Dependencies
+- Upgraded `jose` to ^6.0.0 for JWE token encryption
+- Upgraded `plaid` to ^41.0.0 for latest API support
 
 ### Notes
 This release provides tools and documentation to help developers integrate
