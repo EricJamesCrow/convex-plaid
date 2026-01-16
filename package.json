@@ -44,6 +44,10 @@
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
     },
+    "./helpers": {
+      "types": "./dist/client/helpers.d.ts",
+      "default": "./dist/client/helpers.js"
+    },
     "./react": {
       "types": "./dist/react/index.d.ts",
       "default": "./dist/react/index.js"
