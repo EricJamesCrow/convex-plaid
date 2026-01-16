@@ -4,14 +4,24 @@
 
 ## Overview
 
-This document catalogs dangerous patterns we've observed in Convex component integrations. Since Convex components **cannot access `ctx.auth`**, all authentication and authorization must be enforced in your host app's wrapper functions. Failing to do this correctly creates serious security vulnerabilities.
+This document catalogs the **four most critical security mistakes** when integrating Convex components. Since Convex components **cannot access `ctx.auth`**, all authentication and authorization must be enforced in your host app's wrapper functions. Failing to do this correctly creates serious security vulnerabilities.
 
 **Why this matters:** Financial data is highly sensitive. A single security mistake could expose users' bank accounts, transactions, and credit card information to unauthorized parties.
+
+**Document Structure:**
+- **Core Anti-Patterns (1-4):** The four most critical mistakes that must be avoided
+- **Additional Security Concerns:** Other important security considerations
 
 **Related Documentation:**
 - [CLAUDE.md - Security Best Practices](../CLAUDE.md#security-best-practices)
 - [example/convex/secureWrappers.ts](../example/convex/secureWrappers.ts) - Secure implementation patterns
 - [docs/auth-support-findings.md](./auth-support-findings.md) - Why components can't access ctx.auth
+
+---
+
+## Core Anti-Patterns
+
+These four patterns represent the most critical security vulnerabilities when integrating Convex components. Each one has been exploited in real-world applications and can lead to complete data breaches.
 
 ---
 
@@ -370,7 +380,13 @@ export const getMyItems = query({
 
 ---
 
-## Anti-Pattern 5: Caching User Data Without userId Scoping
+## Additional Security Concerns
+
+The following patterns, while not as immediately critical as the core four, represent important security considerations that can lead to vulnerabilities, performance issues, or data leakage. Consider these as you mature your integration.
+
+---
+
+## Additional Concern 1: Caching User Data Without userId Scoping
 
 ### The Problem
 
@@ -486,7 +502,7 @@ export const getMyItem = query({
 
 ---
 
-## Anti-Pattern 6: Using Weak or Predictable Resource IDs
+## Additional Concern 2: Using Weak or Predictable Resource IDs
 
 ### The Problem
 
@@ -586,7 +602,7 @@ const targetAccount = accounts?.find(a => a.accountId === accountId);
 
 ---
 
-## Anti-Pattern 7: Not Rate-Limiting Sensitive Operations
+## Additional Concern 3: Not Rate-Limiting Sensitive Operations
 
 ### The Problem
 
@@ -700,7 +716,7 @@ export const syncMyItem = action({
 
 ---
 
-## Anti-Pattern 8: Leaking Sensitive Data in Error Messages
+## Additional Concern 4: Leaking Sensitive Data in Error Messages
 
 ### The Problem
 
@@ -796,7 +812,7 @@ export const syncItem = action({
 
 ---
 
-## Anti-Pattern 9: Not Validating Resource State Before Operations
+## Additional Concern 5: Not Validating Resource State Before Operations
 
 ### The Problem
 
@@ -878,7 +894,7 @@ export const reauthItem = action({
 
 ---
 
-## Anti-Pattern 10: Exposing Access Tokens or Encryption Keys
+## Additional Concern 6: Exposing Access Tokens or Encryption Keys
 
 ### The Problem
 
@@ -956,26 +972,34 @@ console.log("Exchanging token for user:", userId);  // Safe metadata only
 
 ## Summary: Security Checklist
 
-### ✅ ALWAYS:
+### ✅ Core Security Requirements (MUST DO)
 
-1. **Derive userId from `ctx.auth`** - Use `requireAuth()`, never accept from client
-2. **Verify ownership** - Check `resource.userId === authenticatedUserId` before operations
-3. **Return consistent errors** - Don't leak information about resource existence
-4. **Validate resource state** - Check status/state before operations
-5. **Rate limit sensitive operations** - Prevent abuse of external APIs
-6. **Use secure patterns** - Follow examples in `example/convex/secureWrappers.ts`
-7. **Test authorization** - Verify users can't access others' data
+These four requirements correspond to the core anti-patterns and must be enforced in every wrapper function:
 
-### ❌ NEVER:
+1. **Derive userId from `ctx.auth`** - Use `requireAuth()`, never accept from client (Anti-Pattern 1)
+2. **Verify ownership** - Check `resource.userId === authenticatedUserId` before operations (Anti-Pattern 2)
+3. **Never expose internal mutations** - Only use component's public API with proper validation (Anti-Pattern 3)
+4. **Return consistent errors** - Don't leak information about resource existence (Anti-Pattern 4)
+
+### ✅ Additional Best Practices (SHOULD DO)
+
+These recommendations address the additional security concerns:
+
+5. **Cache with userId scoping** - Include userId in cache keys if caching is necessary
+6. **Use opaque resource IDs** - Prefer long random IDs over sequential ones
+7. **Rate limit sensitive operations** - Prevent abuse of external APIs
+8. **Return generic errors** - Log detailed errors server-side only
+9. **Validate resource state** - Check status/state before operations
+10. **Protect sensitive data** - Never log or return access tokens or encryption keys
+
+### ❌ NEVER Do These
 
 1. **Accept userId from client** - Would allow complete data breach
 2. **Skip ownership checks** - Would enable horizontal privilege escalation
 3. **Expose internal mutations** - Would bypass validation and state management
-4. **Return different errors** - Would leak information about system state
-5. **Cache without userId scoping** - Would leak data across users
-6. **Log sensitive data** - Would expose tokens/keys in logs
-7. **Trust client input** - Would enable injection attacks
-8. **Expose access tokens** - Would grant full API access to attackers
+4. **Return different errors for "not found" vs "unauthorized"** - Leaks information about system state
+5. **Log sensitive data** - Would expose tokens/keys in logs
+6. **Trust client input without validation** - Would enable injection attacks
 
 ### 📚 Additional Resources
 
@@ -986,17 +1010,21 @@ console.log("Exchanging token for user:", userId);  // Safe metadata only
 
 ### 🔍 Security Review Checklist
 
-Before deploying, verify:
+Before deploying, verify these **critical requirements** (Core Anti-Patterns 1-4):
 
-- [ ] No functions accept `userId` as an argument
-- [ ] All queries/mutations call `requireAuth()` first
-- [ ] Resource-specific operations verify ownership
-- [ ] Errors don't reveal information about other users' data
+- [ ] **No functions accept `userId` as an argument** - All userId values derived from `ctx.auth`
+- [ ] **All queries/mutations call `requireAuth()` first** - No unauthenticated access
+- [ ] **Resource-specific operations verify ownership** - Check `resource.userId === authenticatedUserId`
+- [ ] **No internal mutations exposed directly** - Only use component's public actions/mutations
+- [ ] **Consistent error responses** - Same error for "not found" and "unauthorized"
+
+**Additional checks (recommended):**
+
 - [ ] Sensitive operations are rate-limited
 - [ ] No access tokens or keys in logs or responses
 - [ ] State transitions are validated before operations
-- [ ] Different error messages don't leak resource existence
+- [ ] Cache keys include userId if caching is used
 
 ---
 
-**Remember:** Financial data security is not optional. Every mistake in this document has been exploited in real-world applications. Review your code carefully and test authorization thoroughly.
+**Remember:** Financial data security is not optional. Every mistake in this document has been exploited in real-world applications. The core four anti-patterns can lead to complete data breaches. Review your code carefully and test authorization thoroughly.
