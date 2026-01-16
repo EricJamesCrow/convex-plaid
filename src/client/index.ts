@@ -35,6 +35,9 @@ import type {
   PlaidItem,
   PlaidItemStatus,
   CircuitState,
+  UserIdentity,
+  AuthenticatedContext,
+  SecureWrapper,
 } from "./types.js";
 import {
   verifyPlaidWebhook,
@@ -170,6 +173,10 @@ export type {
   PlaidItem,
   PlaidItemStatus,
   CircuitState,
+  // Authentication types
+  UserIdentity,
+  AuthenticatedContext,
+  SecureWrapper,
 };
 
 // =============================================================================

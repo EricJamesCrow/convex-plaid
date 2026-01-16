@@ -29,6 +29,8 @@
  * @module helpers
  */
 
+import type { AuthenticatedContext } from "./types.js";
+
 /**
  * Extract userId from ctx.auth and throw if not authenticated.
  *
@@ -47,11 +49,7 @@
  * });
  * ```
  */
-export async function requireAuth(ctx: {
-  auth: {
-    getUserIdentity: () => Promise<{ subject: string; [key: string]: unknown } | null>;
-  };
-}): Promise<string> {
+export async function requireAuth(ctx: AuthenticatedContext): Promise<string> {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity?.subject) {
     throw new Error("Authentication required");
@@ -81,11 +79,7 @@ export async function requireAuth(ctx: {
  * ```
  */
 export async function requireOwnership(
-  ctx: {
-    auth: {
-      getUserIdentity: () => Promise<{ subject: string; [key: string]: unknown } | null>;
-    };
-  },
+  ctx: AuthenticatedContext,
   resourceUserId: string
 ): Promise<void> {
   const identity = await ctx.auth.getUserIdentity();

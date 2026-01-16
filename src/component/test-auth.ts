@@ -15,7 +15,7 @@ export const testAuth = query({
     // "Within a component, ctx.auth is not available"
 
     try {
-      // @ts-expect-error - ctx.auth is not available in components
+      // ctx.auth may be undefined in components
       const identity = await ctx.auth?.getUserIdentity();
 
       return {

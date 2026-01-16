@@ -356,6 +356,79 @@ export interface InstitutionMetadata {
 }
 
 // =============================================================================
+// AUTHENTICATION TYPES
+// =============================================================================
+
+/**
+ * User identity from Convex authentication.
+ *
+ * The `subject` field is the unique user ID and is always present.
+ * Other fields may be available depending on the auth provider.
+ *
+ * @see https://docs.convex.dev/auth
+ */
+export type UserIdentity = {
+  /** Unique user identifier (userId) */
+  subject: string;
+  /** User's email address (if available) */
+  email?: string;
+  /** User's display name (if available) */
+  name?: string;
+  /** Additional fields from auth provider */
+  [key: string]: unknown;
+};
+
+/**
+ * Context with Convex auth available (for host app wrapper functions).
+ *
+ * This type represents the minimal auth-capable context that Convex provides
+ * to queries and mutations in the host app.
+ *
+ * @example
+ * ```typescript
+ * import type { AuthenticatedContext } from "@crowdevelopment/convex-plaid/helpers";
+ *
+ * export const getMyItems = query({
+ *   handler: async (ctx: AuthenticatedContext) => {
+ *     const userId = await requireAuth(ctx);
+ *     return await ctx.runQuery(api.plaid.getItemsByUser, { userId });
+ *   },
+ * });
+ * ```
+ */
+export type AuthenticatedContext = {
+  auth: {
+    getUserIdentity: () => Promise<UserIdentity | null>;
+  };
+  runQuery: <T>(fn: any, args: any) => Promise<T>;
+  runMutation: <T>(fn: any, args: any) => Promise<T>;
+};
+
+/**
+ * Secure wrapper function signature.
+ *
+ * This type represents a function that accepts an authenticated context
+ * and optional arguments, and returns a promise.
+ *
+ * Use this type for wrapper functions that require authentication.
+ *
+ * @template TArgs - Optional arguments type
+ * @template TReturn - Return value type
+ *
+ * @example
+ * ```typescript
+ * const getMyItems: SecureWrapper<void, PlaidItem[]> = async (ctx) => {
+ *   const userId = await requireAuth(ctx);
+ *   return await ctx.runQuery(api.plaid.getItemsByUser, { userId });
+ * };
+ * ```
+ */
+export type SecureWrapper<TArgs = void, TReturn = unknown> = (
+  ctx: AuthenticatedContext,
+  args: TArgs
+) => Promise<TReturn>;
+
+// =============================================================================
 // RE-EXPORTS
 // =============================================================================
 
