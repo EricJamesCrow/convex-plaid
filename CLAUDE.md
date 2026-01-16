@@ -14,6 +14,221 @@ This component wraps the Plaid API and stores all data in Convex tables. It hand
 - **Webhooks** - JWT signature verification, auto-sync triggers
 - **Re-auth Flow** - Update Link mode for expired credentials
 
+## Security Best Practices
+
+⚠️ **IMPORTANT:** This component is designed to run in a Convex component context, which means it **does not have access to `ctx.auth`**. Security must be enforced in your host app's wrapper functions.
+
+### Why This Matters
+
+Convex components are **architecturally isolated** from the host app's authentication context. This design provides:
+- ✅ **Portability**: Component works with any auth provider (Clerk, Auth0, custom, etc.)
+- ✅ **Testability**: Clear boundaries make testing easier
+- ✅ **Explicitness**: Data flow is visible and auditable
+- ✅ **Reusability**: Same component works across different apps
+
+See `docs/auth-support-findings.md` for detailed architectural rationale.
+
+### The Security Pattern
+
+**❌ INSECURE - Direct exposure:**
+```typescript
+// DON'T DO THIS - Allows arbitrary userId access from client
+import { query } from "./_generated/server";
+import { components } from "./_generated/api";
+
+export const getItemsByUser = query({
+  args: { userId: v.string() },  // ❌ Client can pass ANY userId
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.plaid.public.getItemsByUser, args);
+  },
+});
+```
+
+**✅ SECURE - Auth-scoped wrapper:**
+```typescript
+// DO THIS - Derives userId from authenticated user
+import { query } from "./_generated/server";
+import { components } from "./_generated/api";
+import { requireAuth } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getMyItems = query({
+  args: {},  // ✅ No userId parameter
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);  // ✅ Get from auth
+    return await ctx.runQuery(components.plaid.public.getItemsByUser, { userId });
+  },
+});
+```
+
+### Helper Utilities
+
+The component provides helper functions to simplify secure implementations:
+
+#### `requireAuth(ctx)` - Extract and Validate User ID
+
+```typescript
+import { requireAuth } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getMyAccounts = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);
+    return await ctx.runQuery(components.plaid.public.getAccountsByUser, { userId });
+  },
+});
+```
+
+- **Throws:** `"Authentication required"` if user not logged in
+- **Returns:** Authenticated user's ID (`identity.subject`)
+
+#### `requireOwnership(ctx, resourceUserId)` - Verify Resource Ownership
+
+```typescript
+import { requireAuth, requireOwnership } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getTransactionsByAccount = query({
+  args: { accountId: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await requireAuth(ctx);
+
+    // Verify user owns this account
+    const accounts = await ctx.runQuery(
+      components.plaid.public.getAccountsByUser,
+      { userId }
+    );
+    const account = accounts.find(a => a.accountId === args.accountId);
+    if (!account) {
+      throw new Error("Account not found or unauthorized");
+    }
+
+    return await ctx.runQuery(
+      components.plaid.public.getTransactionsByAccount,
+      { accountId: args.accountId }
+    );
+  },
+});
+```
+
+- **Throws:** `"Authentication required"` if not logged in
+- **Throws:** `"Unauthorized: You don't own this resource"` if userId mismatch
+
+### Complete Integration Example
+
+Here's how to create secure wrapper queries for the most common operations:
+
+```typescript
+// convex/plaid.ts
+import { query, action } from "./_generated/server";
+import { components } from "./_generated/api";
+import { requireAuth } from "@crowdevelopment/convex-plaid/helpers";
+import { v } from "convex/values";
+
+// === SECURE QUERIES ===
+
+export const getMyItems = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);
+    return await ctx.runQuery(components.plaid.public.getItemsByUser, { userId });
+  },
+});
+
+export const getMyAccounts = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);
+    return await ctx.runQuery(components.plaid.public.getAccountsByUser, { userId });
+  },
+});
+
+export const getMyTransactions = query({
+  args: {
+    startDate: v.optional(v.string()),
+    endDate: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireAuth(ctx);
+    return await ctx.runQuery(components.plaid.public.getTransactionsByUser, {
+      userId,
+      ...args,
+    });
+  },
+});
+
+// === SECURE ACTIONS ===
+
+export const syncMyTransactions = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await requireAuth(ctx);
+
+    // Verify user owns this item
+    const item = await ctx.runQuery(components.plaid.public.getItem, {
+      plaidItemId: args.plaidItemId,
+    });
+    if (!item || item.userId !== userId) {
+      throw new Error("Item not found or unauthorized");
+    }
+
+    // Proceed with sync
+    return await ctx.runAction(components.plaid.actions.syncTransactions, {
+      plaidItemId: args.plaidItemId,
+    });
+  },
+});
+```
+
+### Common Pitfalls
+
+🚫 **Don't accept client-supplied IDs without validation:**
+```typescript
+// BAD - Client can access any item
+export const getItem = query({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.plaid.public.getItem, args);
+  },
+});
+```
+
+🚫 **Don't use userId from function arguments:**
+```typescript
+// BAD - Client can pass any userId
+export const getAccounts = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(
+      components.plaid.public.getAccountsByUser,
+      { userId: args.userId }  // ❌ Trusting client input
+    );
+  },
+});
+```
+
+✅ **Always derive userId from ctx.auth:**
+```typescript
+// GOOD - Extract userId from auth
+export const getMyAccounts = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);  // ✅ From auth
+    return await ctx.runQuery(
+      components.plaid.public.getAccountsByUser,
+      { userId }
+    );
+  },
+});
+```
+
+### Additional Resources
+
+- **Architecture Details**: `docs/auth-support-findings.md` - Why components can't access ctx.auth
+- **Helper Functions**: Import from `@crowdevelopment/convex-plaid/helpers`
+- **TypeScript Types**: `AuthenticatedContext`, `UserIdentity`, `SecureWrapper`
+
+---
+
 ## Architecture
 
 This is a **Convex Component** - an isolated module with its own schema and functions that integrates into a host Convex app.
