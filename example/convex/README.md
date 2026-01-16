@@ -1,7 +1,25 @@
-# Welcome to your Convex functions directory!
+# Convex Plaid Component Examples
 
-Write your Convex functions here.
-See https://docs.convex.dev/functions for more.
+This directory contains example implementations for the `@crowdevelopment/convex-plaid` component.
+
+## Files
+
+- **plaid.ts** - Complete integration example with all wrapper functions
+- **http.ts** - Webhook configuration example
+- **secureWrappers.ts** - Security patterns and best practices (⭐ **READ THIS FIRST**)
+
+## Security-First Development
+
+**IMPORTANT:** Before implementing Plaid in your app, read `secureWrappers.ts` to understand:
+- Why authentication must be enforced in wrapper functions
+- How to verify ownership of resources
+- Common security anti-patterns to avoid
+- Type-safe patterns for foolproof security
+
+## Quick Start
+
+See the main README at the repository root for installation and setup instructions.
+See https://docs.convex.dev/functions for more about Convex functions.
 
 A query function that takes two arguments looks like:
 
