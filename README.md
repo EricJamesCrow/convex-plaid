@@ -144,6 +144,78 @@ export const getAccountsByUser = query({
 });
 ```
 
+## Security
+
+### Why You Need Wrapper Functions
+
+Convex components are **architecturally isolated** from your app's authentication context - they cannot access `ctx.auth`. This is by design for portability and testability, but it means **you must enforce security in your wrapper functions**.
+
+### The Problem
+
+```typescript
+// ❌ INSECURE - Never do this
+export const getItemsByUser = query({
+  args: { userId: v.string() },  // Client can pass ANY userId!
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(plaidClient.api.getItemsByUser, args);
+  },
+});
+```
+
+### The Solution
+
+```typescript
+// ✅ SECURE - Always derive userId from auth
+import { requireAuth } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getMyItems = query({
+  args: {},  // No userId argument
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);  // Get from auth
+    return await ctx.runQuery(plaidClient.api.getItemsByUser, { userId });
+  },
+});
+```
+
+### Security Helpers
+
+The component provides helper functions to simplify secure implementations:
+
+| Helper | Purpose |
+| ------ | ------- |
+| `requireAuth(ctx)` | Extract userId from auth, throw if not logged in |
+| `requireOwnership(ctx, userId)` | Verify user owns a resource |
+| `requireItemOwnership(ctx, plaidItemId, api)` | Verify user owns a Plaid item |
+| `requireAccountOwnership(ctx, accountId, api)` | Verify user owns a Plaid account |
+
+Example with item ownership:
+
+```typescript
+import { requireItemOwnership } from "@crowdevelopment/convex-plaid/helpers";
+
+export const syncMyItem = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    // Throws if not authenticated or doesn't own the item
+    const item = await requireItemOwnership(ctx, args.plaidItemId, plaidClient.api);
+
+    // Safe to proceed
+    return await plaidClient.syncTransactions(ctx, { plaidItemId: args.plaidItemId });
+  },
+});
+```
+
+### API Security Classification
+
+| Query/Mutation | Security Requirement |
+| -------------- | -------------------- |
+| `getItemsByUser`, `getAccountsByUser`, `getTransactionsByUser` | Use `requireAuth` - scopes by userId |
+| `getItem`, `deletePlaidItem` | Use `requireItemOwnership` - verify ownership |
+| `getTransactionsByAccount` | Use `requireAccountOwnership` - verify ownership |
+| `syncTransactions`, `fetchLiabilities` | Use `requireItemOwnership` - verify ownership |
+
+See [`CLAUDE.md`](./CLAUDE.md) for comprehensive security patterns and examples.
+
 ## API Reference
 
 ### Plaid Client

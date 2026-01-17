@@ -29,7 +29,12 @@
  * @module helpers
  */
 
-import type { AuthenticatedContext } from "./types.js";
+import type {
+  AuthenticatedContext,
+  PlaidAccount,
+  PlaidItem,
+} from "./types.js";
+import type { PlaidComponent } from "./index.js";
 
 /**
  * Extract userId from ctx.auth and throw if not authenticated.
@@ -89,4 +94,59 @@ export async function requireOwnership(
   if (identity.subject !== resourceUserId) {
     throw new Error("Unauthorized: You don't own this resource");
   }
+}
+
+/**
+ * Verify that the authenticated user owns a Plaid item.
+ *
+ * @param ctx - Query or mutation context with auth
+ * @param plaidItemId - Plaid item document ID (string)
+ * @param plaidApi - components.plaid.public or plaid.api
+ * @returns The Plaid item if owned by the user
+ */
+export async function requireItemOwnership(
+  ctx: AuthenticatedContext,
+  plaidItemId: string,
+  plaidApi: Pick<PlaidComponent["public"], "getItem">
+): Promise<PlaidItem> {
+  const userId = await requireAuth(ctx);
+  const item = (await ctx.runQuery(plaidApi.getItem, {
+    plaidItemId,
+  })) as PlaidItem | null;
+
+  if (!item) {
+    throw new Error("Plaid item not found");
+  }
+
+  if (item.userId !== userId) {
+    throw new Error("Unauthorized: You don't own this item");
+  }
+
+  return item;
+}
+
+/**
+ * Verify that the authenticated user owns a Plaid account.
+ *
+ * @param ctx - Query or mutation context with auth
+ * @param accountId - Plaid account_id
+ * @param plaidApi - components.plaid.public or plaid.api
+ * @returns The Plaid account if owned by the user
+ */
+export async function requireAccountOwnership(
+  ctx: AuthenticatedContext,
+  accountId: string,
+  plaidApi: Pick<PlaidComponent["public"], "getAccountsByUser">
+): Promise<PlaidAccount> {
+  const userId = await requireAuth(ctx);
+  const accounts = (await ctx.runQuery(plaidApi.getAccountsByUser, {
+    userId,
+  })) as PlaidAccount[];
+  const account = accounts.find((acc) => acc.accountId === accountId);
+
+  if (!account) {
+    throw new Error("Account not found or unauthorized");
+  }
+
+  return account;
 }

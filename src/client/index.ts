@@ -32,6 +32,7 @@ import type {
   SyncResult,
   SyncStats,
   InstitutionMetadata,
+  PlaidAccount,
   PlaidItem,
   PlaidItemStatus,
   CircuitState,
@@ -169,6 +170,8 @@ export type {
   SyncStats,
   // Institution types
   InstitutionMetadata,
+  // Account types
+  PlaidAccount,
   // PlaidItem types
   PlaidItem,
   PlaidItemStatus,

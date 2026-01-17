@@ -6,8 +6,13 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { requireAuth, requireOwnership } from "./helpers.js";
-import type { AuthenticatedContext } from "./types.js";
+import {
+  requireAuth,
+  requireOwnership,
+  requireItemOwnership,
+  requireAccountOwnership,
+} from "./helpers.js";
+import type { AuthenticatedContext, PlaidItem, PlaidAccount } from "./types.js";
 
 /**
  * Helper to create a mock AuthenticatedContext
@@ -482,5 +487,341 @@ describe("Security Helper Utilities", () => {
       await result1;
       await result2;
     });
+  });
+});
+
+// =============================================================================
+// requireItemOwnership Tests
+// =============================================================================
+
+describe("requireItemOwnership", () => {
+  /**
+   * Create mock PlaidItem data
+   */
+  function createMockPlaidItem(
+    userId: string,
+    plaidItemId = "item-123"
+  ): PlaidItem {
+    return {
+      _id: plaidItemId,
+      userId,
+      itemId: "plaid-item-abc",
+      institutionId: "ins_123",
+      institutionName: "Test Bank",
+      products: ["transactions"],
+      status: "active",
+      createdAt: Date.now(),
+    };
+  }
+
+  /**
+   * Create mock plaidApi with getItem method
+   */
+  function createMockPlaidApi(
+    getItemResult: PlaidItem | null
+  ): Pick<any, "getItem"> {
+    return {
+      getItem: vi.fn(),
+    };
+  }
+
+  it("should return item when user owns it", async () => {
+    const mockItem = createMockPlaidItem("user-123");
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue(mockItem);
+
+    const mockApi = createMockPlaidApi(mockItem);
+
+    const result = await requireItemOwnership(mockCtx, "item-123", mockApi);
+
+    expect(result).toEqual(mockItem);
+    expect(mockCtx.runQuery).toHaveBeenCalledWith(mockApi.getItem, {
+      plaidItemId: "item-123",
+    });
+  });
+
+  it("should throw when user is not authenticated", async () => {
+    const mockItem = createMockPlaidItem("user-123");
+    const mockCtx = createMockContext(async () => null);
+    mockCtx.runQuery = vi.fn().mockResolvedValue(mockItem);
+
+    const mockApi = createMockPlaidApi(mockItem);
+
+    await expect(
+      requireItemOwnership(mockCtx, "item-123", mockApi)
+    ).rejects.toThrow("Authentication required");
+
+    // runQuery should not be called if auth fails first
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("should throw when item not found", async () => {
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue(null);
+
+    const mockApi = createMockPlaidApi(null);
+
+    await expect(
+      requireItemOwnership(mockCtx, "nonexistent-item", mockApi)
+    ).rejects.toThrow("Plaid item not found");
+  });
+
+  it("should throw when user doesn't own item", async () => {
+    const mockItem = createMockPlaidItem("user-456"); // Different user owns it
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123", // Authenticated as user-123
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue(mockItem);
+
+    const mockApi = createMockPlaidApi(mockItem);
+
+    await expect(
+      requireItemOwnership(mockCtx, "item-123", mockApi)
+    ).rejects.toThrow("Unauthorized: You don't own this item");
+  });
+
+  it("should check authentication before checking item ownership", async () => {
+    const mockCtx = createMockContext(async () => null);
+    mockCtx.runQuery = vi.fn();
+
+    const mockApi = createMockPlaidApi(null);
+
+    await expect(
+      requireItemOwnership(mockCtx, "item-123", mockApi)
+    ).rejects.toThrow("Authentication required");
+
+    // Should fail at auth check, never reaching the query
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("should handle empty string plaidItemId", async () => {
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue(null);
+
+    const mockApi = createMockPlaidApi(null);
+
+    await expect(requireItemOwnership(mockCtx, "", mockApi)).rejects.toThrow(
+      "Plaid item not found"
+    );
+  });
+
+  it("should work with different user ID formats", async () => {
+    const testCases = [
+      "user-abc",
+      "auth0|12345",
+      "clerk|user_xyz",
+      "custom-user-id-123",
+    ];
+
+    for (const userId of testCases) {
+      const mockItem = createMockPlaidItem(userId);
+      const mockCtx = createMockContext(async () => ({
+        subject: userId,
+      }));
+      mockCtx.runQuery = vi.fn().mockResolvedValue(mockItem);
+
+      const mockApi = createMockPlaidApi(mockItem);
+
+      const result = await requireItemOwnership(mockCtx, "item-123", mockApi);
+      expect(result.userId).toBe(userId);
+    }
+  });
+});
+
+// =============================================================================
+// requireAccountOwnership Tests
+// =============================================================================
+
+describe("requireAccountOwnership", () => {
+  /**
+   * Create mock PlaidAccount data
+   */
+  function createMockPlaidAccount(
+    userId: string,
+    accountId = "account-123"
+  ): PlaidAccount {
+    return {
+      _id: "doc-id-123",
+      userId,
+      plaidItemId: "item-123",
+      accountId,
+      name: "Test Checking",
+      type: "depository",
+      subtype: "checking",
+      mask: "1234",
+      balances: {
+        available: 1000000, // MILLIUNITS
+        current: 1000000,
+        isoCurrencyCode: "USD",
+      },
+      createdAt: Date.now(),
+    };
+  }
+
+  /**
+   * Create mock plaidApi with getAccountsByUser method
+   */
+  function createMockPlaidApi(
+    accounts: PlaidAccount[]
+  ): Pick<any, "getAccountsByUser"> {
+    return {
+      getAccountsByUser: vi.fn(),
+    };
+  }
+
+  it("should return account when user owns it", async () => {
+    const mockAccount = createMockPlaidAccount("user-123", "account-abc");
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue([mockAccount]);
+
+    const mockApi = createMockPlaidApi([mockAccount]);
+
+    const result = await requireAccountOwnership(
+      mockCtx,
+      "account-abc",
+      mockApi
+    );
+
+    expect(result).toEqual(mockAccount);
+    expect(mockCtx.runQuery).toHaveBeenCalledWith(mockApi.getAccountsByUser, {
+      userId: "user-123",
+    });
+  });
+
+  it("should throw when user is not authenticated", async () => {
+    const mockAccount = createMockPlaidAccount("user-123");
+    const mockCtx = createMockContext(async () => null);
+    mockCtx.runQuery = vi.fn().mockResolvedValue([mockAccount]);
+
+    const mockApi = createMockPlaidApi([mockAccount]);
+
+    await expect(
+      requireAccountOwnership(mockCtx, "account-123", mockApi)
+    ).rejects.toThrow("Authentication required");
+
+    // runQuery should not be called if auth fails first
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("should throw when account not found", async () => {
+    const mockAccount = createMockPlaidAccount("user-123", "account-other");
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue([mockAccount]);
+
+    const mockApi = createMockPlaidApi([mockAccount]);
+
+    await expect(
+      requireAccountOwnership(mockCtx, "account-nonexistent", mockApi)
+    ).rejects.toThrow("Account not found or unauthorized");
+  });
+
+  it("should throw when user has no accounts", async () => {
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue([]);
+
+    const mockApi = createMockPlaidApi([]);
+
+    await expect(
+      requireAccountOwnership(mockCtx, "account-123", mockApi)
+    ).rejects.toThrow("Account not found or unauthorized");
+  });
+
+  it("should find correct account among multiple accounts", async () => {
+    const accounts = [
+      createMockPlaidAccount("user-123", "account-1"),
+      createMockPlaidAccount("user-123", "account-2"),
+      createMockPlaidAccount("user-123", "account-3"),
+    ];
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue(accounts);
+
+    const mockApi = createMockPlaidApi(accounts);
+
+    const result = await requireAccountOwnership(mockCtx, "account-2", mockApi);
+
+    expect(result.accountId).toBe("account-2");
+  });
+
+  it("should check authentication before fetching accounts", async () => {
+    const mockCtx = createMockContext(async () => null);
+    mockCtx.runQuery = vi.fn();
+
+    const mockApi = createMockPlaidApi([]);
+
+    await expect(
+      requireAccountOwnership(mockCtx, "account-123", mockApi)
+    ).rejects.toThrow("Authentication required");
+
+    // Should fail at auth check, never reaching the query
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("should handle empty string accountId", async () => {
+    const mockAccount = createMockPlaidAccount("user-123", "account-real");
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue([mockAccount]);
+
+    const mockApi = createMockPlaidApi([mockAccount]);
+
+    await expect(requireAccountOwnership(mockCtx, "", mockApi)).rejects.toThrow(
+      "Account not found or unauthorized"
+    );
+  });
+
+  it("should work with different user ID formats", async () => {
+    const testCases = [
+      "user-abc",
+      "auth0|12345",
+      "clerk|user_xyz",
+      "custom-user-id-123",
+    ];
+
+    for (const userId of testCases) {
+      const mockAccount = createMockPlaidAccount(userId, "account-test");
+      const mockCtx = createMockContext(async () => ({
+        subject: userId,
+      }));
+      mockCtx.runQuery = vi.fn().mockResolvedValue([mockAccount]);
+
+      const mockApi = createMockPlaidApi([mockAccount]);
+
+      const result = await requireAccountOwnership(
+        mockCtx,
+        "account-test",
+        mockApi
+      );
+      expect(result.userId).toBe(userId);
+    }
+  });
+
+  it("should use exact accountId match (case-sensitive)", async () => {
+    const mockAccount = createMockPlaidAccount("user-123", "Account-123");
+    const mockCtx = createMockContext(async () => ({
+      subject: "user-123",
+    }));
+    mockCtx.runQuery = vi.fn().mockResolvedValue([mockAccount]);
+
+    const mockApi = createMockPlaidApi([mockAccount]);
+
+    // Different case should not match
+    await expect(
+      requireAccountOwnership(mockCtx, "account-123", mockApi)
+    ).rejects.toThrow("Account not found or unauthorized");
   });
 });

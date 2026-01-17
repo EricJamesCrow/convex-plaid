@@ -69,6 +69,9 @@ const plaidItemReturnValidator = v.object({
 
 /**
  * Get all plaidItems for a user.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  * NOTE: accessToken is excluded for security.
  */
 export const getItemsByUser = query({
@@ -111,15 +114,19 @@ export const getItemsByUser = query({
 
 /**
  * Get a single plaidItem by component document ID.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify the caller
+ * owns this item before returning data.
  * NOTE: accessToken is excluded for security.
  */
 export const getItem = query({
   args: { plaidItemId: v.string() },
   returns: v.union(plaidItemReturnValidator, v.null()),
   handler: async (ctx, args) => {
-    const items = await ctx.db.query("plaidItems").collect();
-    const item = items.find((i) => String(i._id) === args.plaidItemId);
+    const normalizedId = ctx.db.normalizeId("plaidItems", args.plaidItemId);
+    if (!normalizedId) return null;
 
+    const item = await ctx.db.get(normalizedId);
     if (!item) return null;
 
     // Explicitly return fields to avoid complex type inference
@@ -154,6 +161,9 @@ export const getItem = query({
 /**
  * Get a single plaidItem by Plaid's item_id.
  * Used by webhook handlers to look up items by Plaid's identifier.
+ *
+ * @security Components cannot access ctx.auth. Host apps must not expose this
+ * query directly to clients.
  * NOTE: accessToken is excluded for security.
  */
 export const getItemByPlaidItemId = query({
@@ -198,18 +208,21 @@ export const getItemByPlaidItemId = query({
 /**
  * Get all active plaidItems across all users.
  * Used by scheduled sync jobs to find items that need syncing.
+ *
+ * @security Returns data for all users. Only call from trusted server-side code.
  * NOTE: accessToken is excluded for security.
  */
 export const getAllActiveItems = query({
   args: {},
   returns: v.array(plaidItemReturnValidator),
   handler: async (ctx) => {
-    const items = await ctx.db.query("plaidItems").collect();
+    const items = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_status", (q) => q.eq("status", "active"))
+      .collect();
 
-    // Filter to only active items (isActive === true or undefined for backward compat)
-    const activeItems = items.filter(
-      (item) => item.isActive === undefined || item.isActive === true
-    );
+    // Filter to only active items (isActive !== false for backward compat)
+    const activeItems = items.filter((item) => item.isActive !== false);
 
     // Explicitly map fields to avoid complex type inference
     return activeItems.map((item) => ({
@@ -246,6 +259,9 @@ export const getAllActiveItems = query({
 
 /**
  * Get all accounts for a user.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getAccountsByUser = query({
   args: { userId: v.string() },
@@ -289,6 +305,9 @@ export const getAccountsByUser = query({
 
 /**
  * Get all accounts for a specific plaidItem.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * of the plaidItem before calling this query.
  */
 export const getAccountsByItem = query({
   args: { plaidItemId: v.string() },
@@ -337,6 +356,12 @@ export const getAccountsByItem = query({
 /**
  * Get transactions for a specific account.
  * Returns most recent first.
+ */
+/**
+ * Get transactions for a specific account.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * of the account before calling this query.
  */
 export const getTransactionsByAccount = query({
   args: {
@@ -409,6 +434,9 @@ export const getTransactionsByAccount = query({
 
 /**
  * Get transactions for a user with date range filtering.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getTransactionsByUser = query({
   args: {
@@ -499,6 +527,9 @@ export const getTransactionsByUser = query({
 
 /**
  * Get credit card liabilities for a specific plaidItem.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * of the plaidItem before calling this query.
  */
 export const getLiabilitiesByItem = query({
   args: { plaidItemId: v.string() },
@@ -548,6 +579,9 @@ export const getLiabilitiesByItem = query({
 
 /**
  * Get all credit card liabilities for a user.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getLiabilitiesByUser = query({
   args: { userId: v.string() },
@@ -640,6 +674,9 @@ const mortgageLiabilityReturnValidator = v.object({
 
 /**
  * Get all mortgage liabilities for a user.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getMortgageLiabilitiesByUser = query({
   args: { userId: v.string() },
@@ -684,6 +721,9 @@ export const getMortgageLiabilitiesByUser = query({
 
 /**
  * Get mortgage liability for a specific account.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * of the account before calling this query.
  */
 export const getMortgageLiabilityByAccount = query({
   args: { accountId: v.string() },
@@ -790,6 +830,9 @@ const studentLoanLiabilityReturnValidator = v.object({
 
 /**
  * Get all student loan liabilities for a user.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getStudentLoanLiabilitiesByUser = query({
   args: { userId: v.string() },
@@ -837,6 +880,9 @@ export const getStudentLoanLiabilitiesByUser = query({
 
 /**
  * Get student loan liability for a specific account.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * of the account before calling this query.
  */
 export const getStudentLoanLiabilityByAccount = query({
   args: { accountId: v.string() },
@@ -946,6 +992,9 @@ export const getMerchantEnrichment = query({
  *
  * @param plaidItemId - The ID of the plaidItem to delete
  * @returns Status of deletion (scheduled or not found)
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * before allowing this mutation.
  */
 export const deletePlaidItem = mutation({
   args: { plaidItemId: v.string() },
@@ -955,8 +1004,15 @@ export const deletePlaidItem = mutation({
   }),
   handler: async (ctx, args) => {
     // Find the item
-    const items = await ctx.db.query("plaidItems").collect();
-    const item = items.find((i) => String(i._id) === args.plaidItemId);
+    const normalizedId = ctx.db.normalizeId("plaidItems", args.plaidItemId);
+    if (!normalizedId) {
+      return {
+        status: "not_found" as const,
+        message: "Plaid item not found",
+      };
+    }
+
+    const item = await ctx.db.get(normalizedId);
 
     if (!item) {
       return {
@@ -986,6 +1042,9 @@ export const deletePlaidItem = mutation({
 /**
  * Toggle the isActive state of a plaidItem.
  * Used to pause/resume syncing for a bank connection.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * before allowing this mutation.
  */
 export const togglePlaidItemActive = mutation({
   args: { itemId: v.string() },
@@ -1008,6 +1067,9 @@ export const togglePlaidItemActive = mutation({
 /**
  * Explicitly set the isActive state of a plaidItem.
  * Used when you need to set a specific state rather than toggle.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * before allowing this mutation.
  */
 export const setPlaidItemActive = mutation({
   args: {
@@ -1057,6 +1119,9 @@ const recurringStreamReturnValidator = v.object({
 
 /**
  * Get all recurring streams for a user.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getRecurringStreamsByUser = query({
   args: { userId: v.string() },
@@ -1095,6 +1160,9 @@ export const getRecurringStreamsByUser = query({
 
 /**
  * Get recurring streams for a specific plaidItem.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * of the plaidItem before calling this query.
  */
 export const getRecurringStreamsByItem = query({
   args: { plaidItemId: v.string() },
@@ -1134,6 +1202,9 @@ export const getRecurringStreamsByItem = query({
 /**
  * Get active subscriptions (MATURE + outflow + isActive).
  * These are established recurring expenses like Netflix, Spotify, etc.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getActiveSubscriptions = query({
   args: { userId: v.string() },
@@ -1178,6 +1249,9 @@ export const getActiveSubscriptions = query({
 /**
  * Get recurring income streams (MATURE + inflow + isActive).
  * These are established recurring income like paychecks, deposits, etc.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getRecurringIncome = query({
   args: { userId: v.string() },
@@ -1222,6 +1296,9 @@ export const getRecurringIncome = query({
 /**
  * Get subscriptions summary for a user.
  * Returns count and estimated monthly total.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getSubscriptionsSummary = query({
   args: { userId: v.string() },
@@ -1326,6 +1403,9 @@ const syncLogReturnValidator = v.object({
 /**
  * Get sync logs for a specific plaidItem.
  * Returns most recent first.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * of the plaidItem before calling this query.
  */
 export const getSyncLogsByItem = query({
   args: {
@@ -1365,6 +1445,9 @@ export const getSyncLogsByItem = query({
 /**
  * Get sync logs for a user.
  * Returns most recent first.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
  */
 export const getSyncLogsByUser = query({
   args: {
@@ -1404,6 +1487,9 @@ export const getSyncLogsByUser = query({
 /**
  * Get sync statistics for a plaidItem.
  * Useful for monitoring sync health.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify ownership
+ * of the plaidItem before calling this query.
  */
 export const getSyncStats = query({
   args: {

@@ -338,6 +338,28 @@ export interface PlaidItem {
   nextRetryAt?: number;
 }
 
+/**
+ * Plaid account returned from queries.
+ */
+export interface PlaidAccount {
+  _id: string;
+  userId: string;
+  plaidItemId: string;
+  accountId: string;
+  name: string;
+  officialName?: string;
+  mask?: string;
+  type: string;
+  subtype?: string;
+  balances: {
+    available?: number;
+    current?: number;
+    limit?: number;
+    isoCurrencyCode: string;
+  };
+  createdAt: number;
+}
+
 // =============================================================================
 // INSTITUTION TYPES
 // =============================================================================

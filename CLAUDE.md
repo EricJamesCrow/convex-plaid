@@ -112,6 +112,58 @@ export const getTransactionsByAccount = query({
 - **Throws:** `"Authentication required"` if not logged in
 - **Throws:** `"Unauthorized: You don't own this resource"` if userId mismatch
 
+#### `requireItemOwnership(ctx, plaidItemId, plaidApi)` - Verify Plaid Item Ownership
+
+A convenience helper that combines authentication and item ownership verification in one call:
+
+```typescript
+import { requireItemOwnership } from "@crowdevelopment/convex-plaid/helpers";
+
+export const syncMyItem = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    // Verifies auth AND ownership in one call, returns the item
+    const item = await requireItemOwnership(ctx, args.plaidItemId, plaidClient.api);
+
+    // Safe to proceed - user owns this item
+    return await ctx.runAction(components.plaid.actions.syncTransactions, {
+      plaidItemId: args.plaidItemId,
+    });
+  },
+});
+```
+
+- **Throws:** `"Authentication required"` if not logged in
+- **Throws:** `"Plaid item not found"` if item doesn't exist
+- **Throws:** `"Unauthorized: You don't own this item"` if userId mismatch
+- **Returns:** The `PlaidItem` object if owned by the user
+
+#### `requireAccountOwnership(ctx, accountId, plaidApi)` - Verify Plaid Account Ownership
+
+A convenience helper that verifies the authenticated user owns a specific account:
+
+```typescript
+import { requireAccountOwnership } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getAccountTransactions = query({
+  args: { accountId: v.string() },
+  handler: async (ctx, args) => {
+    // Verifies auth AND ownership in one call, returns the account
+    const account = await requireAccountOwnership(ctx, args.accountId, plaidClient.api);
+
+    // Safe to proceed - user owns this account
+    return await ctx.runQuery(
+      components.plaid.public.getTransactionsByAccount,
+      { accountId: args.accountId }
+    );
+  },
+});
+```
+
+- **Throws:** `"Authentication required"` if not logged in
+- **Throws:** `"Account not found or unauthorized"` if account doesn't exist or user doesn't own it
+- **Returns:** The `PlaidAccount` object if owned by the user
+
 ### Complete Integration Example
 
 Here's how to create secure wrapper queries for the most common operations:
@@ -225,7 +277,11 @@ export const getMyAccounts = query({
 
 - **Architecture Details**: `docs/auth-support-findings.md` - Why components can't access ctx.auth
 - **Helper Functions**: Import from `@crowdevelopment/convex-plaid/helpers`
-- **TypeScript Types**: `AuthenticatedContext`, `UserIdentity`, `SecureWrapper`
+  - `requireAuth(ctx)` - Extract userId from auth context
+  - `requireOwnership(ctx, resourceUserId)` - Verify generic ownership
+  - `requireItemOwnership(ctx, plaidItemId, plaidApi)` - Verify Plaid item ownership
+  - `requireAccountOwnership(ctx, accountId, plaidApi)` - Verify Plaid account ownership
+- **TypeScript Types**: `AuthenticatedContext`, `UserIdentity`, `SecureWrapper`, `PlaidItem`, `PlaidAccount`
 
 ---
 

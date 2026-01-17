@@ -68,7 +68,8 @@ export default defineSchema({
     nextRetryAt: v.optional(v.number()), // When circuit transitions to half_open
   })
     .index("by_user", ["userId"])
-    .index("by_item_id", ["itemId"]),
+    .index("by_item_id", ["itemId"])
+    .index("by_status", ["status"]),
 
   /**
    * Plaid Accounts - Bank/credit accounts from Plaid API
