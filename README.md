@@ -1,34 +1,328 @@
 # @crowdevelopment/convex-plaid
 
-A Convex component for integrating Plaid banking into your application.
+[![npm version](https://img.shields.io/npm/v/%40crowdevelopment%2Fconvex-plaid)](https://www.npmjs.com/package/@crowdevelopment/convex-plaid)
 
-[![npm version](https://badge.fury.io/js/@crowdevelopment%2Fconvex-plaid.svg)](https://badge.fury.io/js/@crowdevelopment%2Fconvex-plaid)
+A Plaid component for Convex that provides bank account connections, transaction syncing, credit card liabilities, and recurring stream detection.
 
-## Features
+## Overview
 
-- 🔗 **Plaid Link** - Create link tokens and exchange public tokens for access
-- 🏦 **Accounts** - Fetch and store bank/credit accounts with real-time balances
-- 💸 **Transactions** - Cursor-based incremental sync with merchant and category data
-- 💳 **Liabilities** - Credit card APRs, payment due dates, statement balances
-- 🔄 **Recurring Streams** - Automatic subscription and income detection
-- 🔔 **Webhook Handling** - JWT signature verification and auto-sync triggers
-- 🔐 **Re-auth Flow** - Update Link mode for expired credentials
-- ⚛️ **React Hooks** - `usePlaidLink` and `useUpdatePlaidLink` for seamless integration
-- 🔒 **Encryption** - Access tokens encrypted with JWE (A256GCM) before storage
+This component wraps the Plaid API and stores all data in Convex tables. It handles:
 
-## Quick Start
+- **Plaid Link** - Create link tokens, exchange public tokens
+- **Accounts** - Fetch and store bank/credit accounts with balances
+- **Transactions** - Cursor-based incremental sync with categories
+- **Liabilities** - Credit card APRs, payment dates, statement balances
+- **Recurring Streams** - Subscription/bill detection, income identification
+- **Webhooks** - JWT signature verification, auto-sync triggers
+- **Re-auth Flow** - Update Link mode for expired credentials
 
-### 1. Install the Component
+## Security Best Practices
+
+**IMPORTANT:** This component is designed to run in a Convex component context, which means it **does not have access to `ctx.auth`**. Security must be enforced in your host app's wrapper functions.
+
+### Why This Matters
+
+Convex components are **architecturally isolated** from the host app's authentication context. This design provides:
+- **Portability**: Component works with any auth provider (Clerk, Auth0, custom, etc.)
+- **Testability**: Clear boundaries make testing easier
+- **Explicitness**: Data flow is visible and auditable
+- **Reusability**: Same component works across different apps
+
+See `docs/auth-support-findings.md` for detailed architectural rationale.
+
+### The Security Pattern
+
+**INSECURE - Direct exposure:**
+```typescript
+// DON'T DO THIS - Allows arbitrary userId access from client
+import { query } from "./_generated/server";
+import { components } from "./_generated/api";
+
+export const getItemsByUser = query({
+  args: { userId: v.string() },  // Client can pass ANY userId
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.plaid.public.getItemsByUser, args);
+  },
+});
+```
+
+**SECURE - Auth-scoped wrapper:**
+```typescript
+// DO THIS - Derives userId from authenticated user
+import { query } from "./_generated/server";
+import { components } from "./_generated/api";
+import { requireAuth } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getMyItems = query({
+  args: {},  // No userId parameter
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);  // Get from auth
+    return await ctx.runQuery(components.plaid.public.getItemsByUser, { userId });
+  },
+});
+```
+
+### Helper Utilities
+
+The component provides helper functions to simplify secure implementations:
+
+#### `requireAuth(ctx)` - Extract and Validate User ID
+
+```typescript
+import { requireAuth } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getMyAccounts = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);
+    return await ctx.runQuery(components.plaid.public.getAccountsByUser, { userId });
+  },
+});
+```
+
+- **Throws:** `"Authentication required"` if user not logged in
+- **Returns:** Authenticated user's ID (`identity.subject`)
+
+#### `requireOwnership(ctx, resourceUserId)` - Verify Resource Ownership
+
+```typescript
+import { requireAuth, requireOwnership } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getTransactionsByAccount = query({
+  args: { accountId: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await requireAuth(ctx);
+
+    // Verify user owns this account
+    const accounts = await ctx.runQuery(
+      components.plaid.public.getAccountsByUser,
+      { userId }
+    );
+    const account = accounts.find(a => a.accountId === args.accountId);
+    if (!account) {
+      throw new Error("Account not found or unauthorized");
+    }
+
+    return await ctx.runQuery(
+      components.plaid.public.getTransactionsByAccount,
+      { accountId: args.accountId }
+    );
+  },
+});
+```
+
+- **Throws:** `"Authentication required"` if not logged in
+- **Throws:** `"Unauthorized: You don't own this resource"` if userId mismatch
+
+#### `requireItemOwnership(ctx, plaidItemId, plaidApi)` - Verify Plaid Item Ownership
+
+A convenience helper that combines authentication and item ownership verification in one call:
+
+```typescript
+import { requireItemOwnership } from "@crowdevelopment/convex-plaid/helpers";
+
+export const syncMyItem = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    // Verifies auth AND ownership in one call, returns the item
+    const item = await requireItemOwnership(ctx, args.plaidItemId, plaidClient.api);
+
+    // Safe to proceed - user owns this item
+    return await ctx.runAction(components.plaid.actions.syncTransactions, {
+      plaidItemId: args.plaidItemId,
+    });
+  },
+});
+```
+
+- **Throws:** `"Authentication required"` if not logged in
+- **Throws:** `"Plaid item not found"` if item doesn't exist
+- **Throws:** `"Unauthorized: You don't own this item"` if userId mismatch
+- **Returns:** The `PlaidItem` object if owned by the user
+
+#### `requireAccountOwnership(ctx, accountId, plaidApi)` - Verify Plaid Account Ownership
+
+A convenience helper that verifies the authenticated user owns a specific account:
+
+```typescript
+import { requireAccountOwnership } from "@crowdevelopment/convex-plaid/helpers";
+
+export const getAccountTransactions = query({
+  args: { accountId: v.string() },
+  handler: async (ctx, args) => {
+    // Verifies auth AND ownership in one call, returns the account
+    const account = await requireAccountOwnership(ctx, args.accountId, plaidClient.api);
+
+    // Safe to proceed - user owns this account
+    return await ctx.runQuery(
+      components.plaid.public.getTransactionsByAccount,
+      { accountId: args.accountId }
+    );
+  },
+});
+```
+
+- **Throws:** `"Authentication required"` if not logged in
+- **Throws:** `"Account not found or unauthorized"` if account doesn't exist or user doesn't own it
+- **Returns:** The `PlaidAccount` object if owned by the user
+
+### Complete Integration Example
+
+Here's how to create secure wrapper queries for the most common operations:
+
+```typescript
+// convex/plaid.ts
+import { query, action } from "./_generated/server";
+import { components } from "./_generated/api";
+import { requireAuth } from "@crowdevelopment/convex-plaid/helpers";
+import { v } from "convex/values";
+
+// === SECURE QUERIES ===
+
+export const getMyItems = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);
+    return await ctx.runQuery(components.plaid.public.getItemsByUser, { userId });
+  },
+});
+
+export const getMyAccounts = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);
+    return await ctx.runQuery(components.plaid.public.getAccountsByUser, { userId });
+  },
+});
+
+export const getMyTransactions = query({
+  args: {
+    startDate: v.optional(v.string()),
+    endDate: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireAuth(ctx);
+    return await ctx.runQuery(components.plaid.public.getTransactionsByUser, {
+      userId,
+      ...args,
+    });
+  },
+});
+
+// === SECURE ACTIONS ===
+
+export const syncMyTransactions = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await requireAuth(ctx);
+
+    // Verify user owns this item
+    const item = await ctx.runQuery(components.plaid.public.getItem, {
+      plaidItemId: args.plaidItemId,
+    });
+    if (!item || item.userId !== userId) {
+      throw new Error("Item not found or unauthorized");
+    }
+
+    // Proceed with sync
+    return await ctx.runAction(components.plaid.actions.syncTransactions, {
+      plaidItemId: args.plaidItemId,
+    });
+  },
+});
+```
+
+### Common Pitfalls
+
+**Don't accept client-supplied IDs without validation:**
+```typescript
+// BAD - Client can access any item
+export const getItem = query({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(components.plaid.public.getItem, args);
+  },
+});
+```
+
+**Don't use userId from function arguments:**
+```typescript
+// BAD - Client can pass any userId
+export const getAccounts = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(
+      components.plaid.public.getAccountsByUser,
+      { userId: args.userId }  // Trusting client input
+    );
+  },
+});
+```
+
+**Always derive userId from ctx.auth:**
+```typescript
+// GOOD - Extract userId from auth
+export const getMyAccounts = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuth(ctx);  // From auth
+    return await ctx.runQuery(
+      components.plaid.public.getAccountsByUser,
+      { userId }
+    );
+  },
+});
+```
+
+### Additional Resources
+
+- **Architecture Details**: `docs/auth-support-findings.md` - Why components can't access ctx.auth
+- **Helper Functions**: Import from `@crowdevelopment/convex-plaid/helpers`
+  - `requireAuth(ctx)` - Extract userId from auth context
+  - `requireOwnership(ctx, resourceUserId)` - Verify generic ownership
+  - `requireItemOwnership(ctx, plaidItemId, plaidApi)` - Verify Plaid item ownership
+  - `requireAccountOwnership(ctx, accountId, plaidApi)` - Verify Plaid account ownership
+- **TypeScript Types**: `AuthenticatedContext`, `UserIdentity`, `SecureWrapper`, `PlaidItem`, `PlaidAccount`
+
+---
+
+## Architecture
+
+This is a **Convex Component** - an isolated module with its own schema and functions that integrates into a host Convex app.
+
+```
+Host App (your convex/ folder)
+├── convex.config.ts      # Registers the component
+├── plaid.ts              # Wrapper actions using Plaid client
+├── http.ts               # Webhook route registration
+└── _generated/api.js     # Includes components.plaid
+
+Component (node_modules/@crowdevelopment/convex-plaid)
+├── src/component/        # Internal tables, actions, queries
+├── src/client/           # Plaid class for host app integration
+└── src/react/            # usePlaidLink React hook
+```
+
+**Key constraints:**
+- Components cannot access `process.env` - all config must be passed explicitly
+- Components cannot use `ctx.auth` - userId must be passed as a string argument
+- All document IDs crossing the component boundary are strings, not `Id<"table">`
+
+---
+
+## Installation
 
 ```bash
 npm install @crowdevelopment/convex-plaid
 ```
 
-### 2. Add to Your Convex App
+## Setup
 
-Create or update `convex/convex.config.ts`:
+### 1. Register the Component
 
 ```typescript
+// convex/convex.config.ts
 import { defineApp } from "convex/server";
 import plaid from "@crowdevelopment/convex-plaid/convex.config";
 
@@ -38,311 +332,295 @@ app.use(plaid);
 export default app;
 ```
 
-### 3. Set Up Environment Variables
+### 2. Generate Encryption Key
 
-Add these to your [Convex Dashboard](https://dashboard.convex.dev) → Settings → Environment Variables:
-
-| Variable | Description |
-| -------- | ----------- |
-| `PLAID_CLIENT_ID` | Your Plaid client ID from [Plaid Dashboard](https://dashboard.plaid.com) → Keys |
-| `PLAID_SECRET` | Your Plaid secret key (sandbox/development/production) |
-| `PLAID_ENV` | `sandbox`, `development`, or `production` |
-| `ENCRYPTION_KEY` | Base64-encoded 256-bit key (see below) |
-
-Generate an encryption key:
+Access tokens are encrypted using JWE (A256GCM) before storage:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-### 4. Configure Plaid Webhooks
+### 3. Configure Environment Variables
 
-1. Go to [Plaid Dashboard → Developers → Webhooks](https://dashboard.plaid.com/developers/webhooks)
-2. Click **"Add webhook"**
-3. Enter your webhook URL:
-   ```
-   https://<your-convex-deployment>.convex.site/plaid/webhook
-   ```
-   (Find your deployment name in the Convex dashboard)
-4. Webhooks are registered per-item when calling `createLinkToken`
+Add to your Convex dashboard (Settings > Environment Variables):
 
-### 5. Register Webhook Routes
+| Variable | Description |
+|----------|-------------|
+| `PLAID_CLIENT_ID` | From Plaid Dashboard > Keys |
+| `PLAID_SECRET` | From Plaid Dashboard > Keys (use sandbox/development/production) |
+| `PLAID_ENV` | `sandbox`, `development`, or `production` |
+| `ENCRYPTION_KEY` | Base64-encoded 256-bit key (from step 2) |
 
-Create `convex/http.ts`:
+---
 
-```typescript
-import { httpRouter } from "convex/server";
-import { components } from "./_generated/api";
-import { registerRoutes } from "@crowdevelopment/convex-plaid";
+## Integration
 
-const http = httpRouter();
+### Create Wrapper Actions
 
-// Register Plaid webhook handler at /plaid/webhook
-registerRoutes(http, components.plaid, {
-  webhookPath: "/plaid/webhook",
-  plaidConfig: {
-    PLAID_CLIENT_ID: process.env.PLAID_CLIENT_ID!,
-    PLAID_SECRET: process.env.PLAID_SECRET!,
-    PLAID_ENV: process.env.PLAID_ENV!,
-    ENCRYPTION_KEY: process.env.ENCRYPTION_KEY!,
-  },
-});
-
-export default http;
-```
-
-### 6. Use the Component
-
-Create `convex/plaid.ts`:
+The component requires explicit config since it can't access `process.env`:
 
 ```typescript
-import { action, query } from "./_generated/server";
-import { components } from "./_generated/api";
-import { Plaid } from "@crowdevelopment/convex-plaid";
+// convex/plaid.ts
+import { action, query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { Plaid } from "@crowdevelopment/convex-plaid";
+import { components } from "./_generated/api";
 
-const plaidClient = new Plaid(components.plaid, {
+// Initialize client with config
+const plaid = new Plaid(components.plaid, {
   PLAID_CLIENT_ID: process.env.PLAID_CLIENT_ID!,
   PLAID_SECRET: process.env.PLAID_SECRET!,
   PLAID_ENV: process.env.PLAID_ENV!,
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY!,
 });
 
-// Create a link token for Plaid Link
+// === LINK FLOW ===
+
 export const createLinkToken = action({
-  args: { userId: v.string() },
+  args: { userId: v.string(), products: v.optional(v.array(v.string())) },
   handler: async (ctx, args) => {
-    return await plaidClient.createLinkToken(ctx, {
+    return await plaid.createLinkToken(ctx, {
       userId: args.userId,
-      products: ["transactions", "liabilities"],
+      products: args.products,
+      // webhookUrl: "https://your-app.convex.site/plaid/webhook",
     });
   },
 });
 
-// Exchange public token after user completes Plaid Link
 export const exchangePublicToken = action({
   args: { publicToken: v.string(), userId: v.string() },
   handler: async (ctx, args) => {
-    return await plaidClient.exchangePublicToken(ctx, args);
+    return await plaid.exchangePublicToken(ctx, args);
   },
 });
 
-// Sync all data for a newly connected item
+// === SYNC OPERATIONS ===
+
 export const onboardItem = action({
   args: { plaidItemId: v.string() },
   handler: async (ctx, args) => {
-    return await plaidClient.onboardItem(ctx, args);
+    return await plaid.onboardItem(ctx, args);
   },
 });
 
-// Query accounts for a user
+export const syncTransactions = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    return await plaid.syncTransactions(ctx, args);
+  },
+});
+
+export const fetchLiabilities = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    return await plaid.fetchLiabilities(ctx, args);
+  },
+});
+
+export const fetchRecurringStreams = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    return await plaid.fetchRecurringStreams(ctx, args);
+  },
+});
+
+// === RE-AUTH FLOW ===
+
+export const createUpdateLinkToken = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    return await plaid.createUpdateLinkToken(ctx, args);
+  },
+});
+
+export const completeReauth = action({
+  args: { plaidItemId: v.string() },
+  handler: async (ctx, args) => {
+    return await plaid.completeReauth(ctx, args);
+  },
+});
+
+// === QUERIES (re-export from component) ===
+
+export const getItemsByUser = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(plaid.api.getItemsByUser, args);
+  },
+});
+
 export const getAccountsByUser = query({
   args: { userId: v.string() },
   handler: async (ctx, args) => {
-    return await ctx.runQuery(plaidClient.api.getAccountsByUser, args);
+    return await ctx.runQuery(plaid.api.getAccountsByUser, args);
   },
 });
-```
 
-## Security
-
-### Why You Need Wrapper Functions
-
-Convex components are **architecturally isolated** from your app's authentication context - they cannot access `ctx.auth`. This is by design for portability and testability, but it means **you must enforce security in your wrapper functions**.
-
-### The Problem
-
-```typescript
-// ❌ INSECURE - Never do this
-export const getItemsByUser = query({
-  args: { userId: v.string() },  // Client can pass ANY userId!
+export const getTransactionsByUser = query({
+  args: {
+    userId: v.string(),
+    startDate: v.optional(v.string()),
+    endDate: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
-    return await ctx.runQuery(plaidClient.api.getItemsByUser, args);
+    return await ctx.runQuery(plaid.api.getTransactionsByUser, args);
   },
 });
-```
 
-### The Solution
-
-```typescript
-// ✅ SECURE - Always derive userId from auth
-import { requireAuth } from "@crowdevelopment/convex-plaid/helpers";
-
-export const getMyItems = query({
-  args: {},  // No userId argument
-  handler: async (ctx) => {
-    const userId = await requireAuth(ctx);  // Get from auth
-    return await ctx.runQuery(plaidClient.api.getItemsByUser, { userId });
+export const getLiabilitiesByUser = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(plaid.api.getLiabilitiesByUser, args);
   },
 });
-```
 
-### Security Helpers
+export const getActiveSubscriptions = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(plaid.api.getActiveSubscriptions, args);
+  },
+});
 
-The component provides helper functions to simplify secure implementations:
+export const getRecurringIncome = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(plaid.api.getRecurringIncome, args);
+  },
+});
 
-| Helper | Purpose |
-| ------ | ------- |
-| `requireAuth(ctx)` | Extract userId from auth, throw if not logged in |
-| `requireOwnership(ctx, userId)` | Verify user owns a resource |
-| `requireItemOwnership(ctx, plaidItemId, api)` | Verify user owns a Plaid item |
-| `requireAccountOwnership(ctx, accountId, api)` | Verify user owns a Plaid account |
+export const getSubscriptionsSummary = query({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.runQuery(plaid.api.getSubscriptionsSummary, args);
+  },
+});
 
-Example with item ownership:
+// === MUTATIONS ===
 
-```typescript
-import { requireItemOwnership } from "@crowdevelopment/convex-plaid/helpers";
-
-export const syncMyItem = action({
+export const deletePlaidItem = mutation({
   args: { plaidItemId: v.string() },
   handler: async (ctx, args) => {
-    // Throws if not authenticated or doesn't own the item
-    const item = await requireItemOwnership(ctx, args.plaidItemId, plaidClient.api);
-
-    // Safe to proceed
-    return await plaidClient.syncTransactions(ctx, { plaidItemId: args.plaidItemId });
+    return await ctx.runMutation(plaid.api.deletePlaidItem, args);
   },
 });
 ```
 
-### API Security Classification
+---
 
-| Query/Mutation | Security Requirement |
-| -------------- | -------------------- |
-| `getItemsByUser`, `getAccountsByUser`, `getTransactionsByUser` | Use `requireAuth` - scopes by userId |
-| `getItem`, `deletePlaidItem` | Use `requireItemOwnership` - verify ownership |
-| `getTransactionsByAccount` | Use `requireAccountOwnership` - verify ownership |
-| `syncTransactions`, `fetchLiabilities` | Use `requireItemOwnership` - verify ownership |
+## Client API Reference
 
-See [`CLAUDE.md`](./CLAUDE.md) for comprehensive security patterns and examples.
-
-## API Reference
-
-### Plaid Client
+### `Plaid` Class
 
 ```typescript
 import { Plaid } from "@crowdevelopment/convex-plaid";
 
-const plaidClient = new Plaid(components.plaid, {
-  PLAID_CLIENT_ID: "...",      // From Plaid Dashboard
-  PLAID_SECRET: "...",         // From Plaid Dashboard
-  PLAID_ENV: "sandbox",        // "sandbox" | "development" | "production"
-  ENCRYPTION_KEY: "...",       // Base64-encoded 256-bit key
+const plaid = new Plaid(components.plaid, {
+  PLAID_CLIENT_ID: string,
+  PLAID_SECRET: string,
+  PLAID_ENV: "sandbox" | "development" | "production",
+  ENCRYPTION_KEY: string,  // Base64-encoded 256-bit key
 });
 ```
 
-#### Methods
+### Methods
 
-| Method | Description |
-| ------ | ----------- |
-| `createLinkToken()` | Create a Plaid Link token |
-| `exchangePublicToken()` | Exchange public token, create item |
-| `fetchAccounts()` | Fetch and store accounts |
-| `syncTransactions()` | Incremental transaction sync |
-| `fetchLiabilities()` | Fetch credit card liabilities |
-| `fetchRecurringStreams()` | Detect subscriptions/income |
-| `createUpdateLinkToken()` | Create re-auth link token |
-| `completeReauth()` | Complete re-auth flow |
-| `onboardItem()` | Run all sync operations |
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `createLinkToken(ctx, { userId, products?, webhookUrl? })` | Create Plaid Link token | `{ linkToken }` |
+| `exchangePublicToken(ctx, { publicToken, userId })` | Exchange public token, create plaidItem | `{ success, itemId, plaidItemId }` |
+| `fetchAccounts(ctx, { plaidItemId })` | Fetch/store accounts | `{ accountCount }` |
+| `syncTransactions(ctx, { plaidItemId, maxPages?, maxTransactions? })` | Sync transactions with pagination | `{ added, modified, removed, cursor, hasMore, pagesProcessed }` |
+| `fetchLiabilities(ctx, { plaidItemId })` | Fetch credit card liabilities | `{ creditCards }` |
+| `fetchRecurringStreams(ctx, { plaidItemId })` | Detect subscriptions/income | `{ inflows, outflows }` |
+| `createUpdateLinkToken(ctx, { plaidItemId })` | Create re-auth link token | `{ linkToken }` |
+| `completeReauth(ctx, { plaidItemId })` | Complete re-auth flow | `{ success }` |
+| `onboardItem(ctx, { plaidItemId })` | Run all sync operations | `{ accounts, transactions, liabilities, recurringStreams?, errors? }` |
+| `api` | Access public queries/mutations | Component API |
 
-### createLinkToken
+### Transaction Sync Pagination
 
-```typescript
-await plaidClient.createLinkToken(ctx, {
-  userId: "user_123",              // Required: your user identifier
-  products: ["transactions"],       // Optional: Plaid products
-  webhookUrl: "https://...",       // Optional: webhook URL
-});
-```
-
-### syncTransactions
+The `syncTransactions` method supports pagination to handle large transaction histories:
 
 ```typescript
-const result = await plaidClient.syncTransactions(ctx, {
+const result = await plaid.syncTransactions(ctx, {
   plaidItemId: "...",
-  maxPages: 10,        // Optional: max pages per call (default: 10)
-  maxTransactions: 5000, // Optional: max transactions (default: 5000)
+  maxPages: 10,        // Max pages per call (default: 10)
+  maxTransactions: 5000, // Max transactions before stopping (default: 5000)
 });
 
 if (result.hasMore) {
   // Schedule another sync to continue
+  await ctx.scheduler.runAfter(0, api.plaid.syncTransactions, { plaidItemId });
 }
 ```
 
-### Component Queries
+### Config Validation
 
-Access data directly via the component's public queries:
+The `Plaid` constructor validates configuration at initialization:
 
-```typescript
-import { query } from "./_generated/server";
-import { components } from "./_generated/api";
-import { Plaid } from "@crowdevelopment/convex-plaid";
+- All required fields must be non-empty strings
+- `PLAID_ENV` must be `sandbox`, `development`, or `production`
+- `ENCRYPTION_KEY` must be valid base64 encoding 32 bytes (256 bits)
 
-const plaidClient = new Plaid(components.plaid, { /* config */ });
+Invalid config throws `PlaidConfigError` with a descriptive message.
 
-// List accounts for a user
-export const getUserAccounts = query({
-  args: { userId: v.string() },
-  handler: async (ctx, args) => {
-    return await ctx.runQuery(plaidClient.api.getAccountsByUser, args);
-  },
-});
+---
 
-// List transactions for a user
-export const getUserTransactions = query({
-  args: { userId: v.string() },
-  handler: async (ctx, args) => {
-    return await ctx.runQuery(plaidClient.api.getTransactionsByUser, args);
-  },
-});
-```
+## Public Queries
 
-### Available Public Queries
+Access via `plaid.api.*` in query/mutation handlers:
 
-| Query | Arguments | Description |
-| ----- | --------- | ----------- |
-| `getItemsByUser` | `userId` | All linked items for a user |
-| `getItem` | `plaidItemId` | Single item by ID |
-| `getAccountsByUser` | `userId` | All accounts for a user |
-| `getAccountsByItem` | `plaidItemId` | Accounts for a specific item |
-| `getTransactionsByUser` | `userId, startDate?, endDate?, limit?` | Transactions with filtering |
-| `getTransactionsByAccount` | `accountId, limit?` | Transactions for an account |
-| `getLiabilitiesByUser` | `userId` | All credit card liabilities |
-| `getLiabilitiesByItem` | `plaidItemId` | Liabilities for a specific item |
-| `getRecurringStreamsByUser` | `userId` | All recurring streams |
-| `getRecurringStreamsByItem` | `plaidItemId` | Streams for a specific item |
-| `getActiveSubscriptions` | `userId` | Active subscription streams |
-| `getRecurringIncome` | `userId` | Active income streams |
-| `getSubscriptionsSummary` | `userId` | Count, monthly total, breakdown |
+| Query | Args | Description |
+|-------|------|-------------|
+| `getItemsByUser` | `{ userId }` | All plaidItems for user (excludes accessToken) |
+| `getItem` | `{ plaidItemId }` | Single plaidItem by ID |
+| `getAccountsByUser` | `{ userId }` | All accounts for user |
+| `getAccountsByItem` | `{ plaidItemId }` | Accounts for specific item |
+| `getTransactionsByUser` | `{ userId, startDate?, endDate?, limit? }` | Transactions with date filtering |
+| `getTransactionsByAccount` | `{ accountId, limit? }` | Transactions for account |
+| `getLiabilitiesByUser` | `{ userId }` | All credit card liabilities |
+| `getLiabilitiesByItem` | `{ plaidItemId }` | Liabilities for specific item |
+| `getRecurringStreamsByUser` | `{ userId }` | All recurring streams |
+| `getRecurringStreamsByItem` | `{ plaidItemId }` | Streams for specific item |
+| `getActiveSubscriptions` | `{ userId }` | MATURE + outflow + isActive streams |
+| `getRecurringIncome` | `{ userId }` | MATURE + inflow + isActive streams |
+| `getSubscriptionsSummary` | `{ userId }` | Count, monthlyTotal, frequency breakdown |
 
-### Available Public Mutations
+### Public Mutations
 
-| Mutation | Arguments | Description |
-| -------- | --------- | ----------- |
-| `deletePlaidItem` | `plaidItemId` | Delete item and all associated data |
+| Mutation | Args | Description |
+|----------|------|-------------|
+| `deletePlaidItem` | `{ plaidItemId }` | Delete item + cascade to accounts, transactions, etc. |
+
+---
 
 ## React Hooks
 
-### usePlaidLink
+```typescript
+import { usePlaidLink, useUpdatePlaidLink } from "@crowdevelopment/convex-plaid/react";
+```
+
+### `usePlaidLink`
 
 Main hook for connecting new bank accounts:
 
 ```tsx
 import { usePlaidLink } from "@crowdevelopment/convex-plaid/react";
 import { api } from "../convex/_generated/api";
-import { useAction } from "convex/react";
 
 function ConnectBank({ userId }: { userId: string }) {
-  const onboardItem = useAction(api.plaid.onboardItem);
-
-  const { open, ready, isLoading, isExchanging } = usePlaidLink({
+  const { open, ready, isLoading, isExchanging, error } = usePlaidLink({
     createLinkToken: api.plaid.createLinkToken,
     exchangePublicToken: api.plaid.exchangePublicToken,
     userId,
     products: ["transactions", "liabilities"],
-    onSuccess: async (plaidItemId) => {
-      await onboardItem({ plaidItemId });
+    onSuccess: (plaidItemId, metadata) => {
+      console.log("Connected:", plaidItemId);
+      // Trigger onboardItem to sync data
     },
+    onExit: () => console.log("User exited"),
+    onError: (error) => console.error(error),
   });
 
   return (
@@ -353,9 +631,9 @@ function ConnectBank({ userId }: { userId: string }) {
 }
 ```
 
-### useUpdatePlaidLink
+### `useUpdatePlaidLink`
 
-Hook for re-authentication when credentials expire:
+Hook for re-authenticating when credentials expire:
 
 ```tsx
 import { useUpdatePlaidLink } from "@crowdevelopment/convex-plaid/react";
@@ -365,166 +643,454 @@ function ReauthBank({ plaidItemId }: { plaidItemId: string }) {
     createUpdateLinkToken: api.plaid.createUpdateLinkToken,
     completeReauth: api.plaid.completeReauth,
     plaidItemId,
+    autoFetchToken: false,  // Manual trigger for re-auth
     onSuccess: () => console.log("Re-authenticated!"),
   });
 
   const handleReauth = async () => {
-    await refreshToken();
-    open();
+    await refreshToken();  // Fetch update link token
+    open();                // Open Plaid Link in update mode
   };
 
   return <button onClick={handleReauth}>Re-authenticate</button>;
 }
 ```
 
-## Webhook Events
-
-The component automatically handles these Plaid webhook events:
-
-| Event | Action |
-| ----- | ------ |
-| `TRANSACTIONS.SYNC_UPDATES_AVAILABLE` | Auto-triggers `syncTransactions` |
-| `ITEM.ERROR` | Updates item status to `error` |
-| `ITEM.PENDING_EXPIRATION` | Marks item as `needs_reauth` |
-| `ITEM.USER_PERMISSION_REVOKED` | Deactivates item |
-| `LIABILITIES.DEFAULT_UPDATE` | Auto-triggers `fetchLiabilities` |
-
-### Custom Webhook Handlers
-
-Add custom logic to webhook events:
+### Hook Options
 
 ```typescript
+interface UsePlaidLinkOptions {
+  createLinkToken: FunctionReference;    // Your wrapped action
+  exchangePublicToken: FunctionReference;
+  userId: string;
+  products?: string[];                   // Default: ["transactions", "liabilities"]
+  webhookUrl?: string;
+  onSuccess?: (plaidItemId: string, metadata: any) => void;
+  onExit?: () => void;
+  onError?: (error: Error) => void;
+  autoFetchToken?: boolean;              // Default: true
+}
+
+interface UsePlaidLinkResult {
+  open: () => void;        // Open Plaid Link modal
+  ready: boolean;          // Link is ready to open
+  isLoading: boolean;      // Fetching link token
+  isExchanging: boolean;   // Exchanging public token
+  error: Error | null;
+  linkToken: string | null;
+  refreshToken: () => Promise<void>;
+}
+```
+
+---
+
+## Webhooks
+
+### Setup
+
+```typescript
+// convex/http.ts
 import { httpRouter } from "convex/server";
-import { components } from "./_generated/api";
 import { registerRoutes } from "@crowdevelopment/convex-plaid";
+import { components } from "./_generated/api";
 
 const http = httpRouter();
 
 registerRoutes(http, components.plaid, {
   webhookPath: "/plaid/webhook",
-  plaidConfig: { /* ... */ },
+  plaidConfig: {
+    PLAID_CLIENT_ID: process.env.PLAID_CLIENT_ID!,
+    PLAID_SECRET: process.env.PLAID_SECRET!,
+    PLAID_ENV: process.env.PLAID_ENV!,
+    ENCRYPTION_KEY: process.env.ENCRYPTION_KEY!,
+  },
+  // Optional: custom handler runs after default processing
   onWebhook: async (ctx, webhookType, webhookCode, itemId, payload) => {
-    // Called for ALL events - useful for logging/analytics
-    console.log("Plaid webhook:", webhookType, webhookCode);
+    console.log("Custom handler:", webhookType, webhookCode);
   },
 });
 
 export default http;
 ```
 
+### Webhook URL
+
+Configure in Plaid Dashboard or pass to `createLinkToken`:
+
+```
+https://your-project.convex.site/plaid/webhook
+```
+
+### Handled Webhooks
+
+| Type | Code | Action |
+|------|------|--------|
+| `TRANSACTIONS` | `SYNC_UPDATES_AVAILABLE` | Auto-triggers `syncTransactions` |
+| `ITEM` | `ERROR` | Updates item status to `error` |
+| `ITEM` | `PENDING_EXPIRATION` | Marks item as `needs_reauth` |
+| `ITEM` | `USER_PERMISSION_REVOKED` | Deactivates item |
+| `LIABILITIES` | `DEFAULT_UPDATE` | Auto-triggers `fetchLiabilities` |
+
 ### JWT Verification
 
-Webhooks are verified using Plaid's ES256 JWT signature:
+Webhooks are verified using Plaid's ES256 JWT signature when `plaidConfig` is provided. The component:
 
-- Fetches Plaid's public key from their JWKS endpoint
-- Verifies the JWT signature
-- Validates request body hash
-- Checks timestamp is within 5 minutes
-- Deduplicates webhooks (24-hour window)
+1. Fetches Plaid's public key from their JWKS endpoint (cached 24 hours)
+2. Verifies the JWT signature (with automatic retry on key rotation)
+3. Validates the request body hash matches
+4. Checks timestamp is within 5 minutes
+5. Deduplicates webhooks using body hash (24-hour window)
 
-## Database Schema
+---
 
-The component creates these tables in its namespace. All monetary values are stored as **MILLIUNITS** (amount × 1000) to avoid floating-point precision errors.
+## Cron Jobs (Scheduled Tasks)
 
-### plaidItems
+The component provides internal mutations for scheduled maintenance. Set up crons in your host app:
+
+```typescript
+// convex/crons.ts
+import { cronJobs } from "convex/server";
+import { internal } from "./_generated/api";
+import { components } from "./_generated/api";
+
+const crons = cronJobs();
+
+// Sync all active items daily at 2 AM UTC
+crons.daily(
+  "daily-plaid-sync",
+  { hourUTC: 2, minuteUTC: 0 },
+  internal.plaidSync.syncAllItems
+);
+
+// Prune old webhook logs hourly (keeps table size manageable)
+crons.hourly(
+  "prune-webhook-logs",
+  { minuteUTC: 0 },
+  components.plaid.private.pruneOldWebhookLogs
+);
+
+export default crons;
+```
+
+```typescript
+// convex/plaidSync.ts
+import { internalAction } from "./_generated/server";
+import { components } from "./_generated/api";
+
+export const syncAllItems = internalAction({
+  handler: async (ctx) => {
+    // Get all active items from your users table
+    // For each item, call the sync actions
+    const items = await ctx.runQuery(components.plaid.public.getItemsByUser, {
+      userId: "..."
+    });
+
+    for (const item of items) {
+      if (item.status === "active") {
+        await ctx.runAction(api.plaid.syncTransactions, {
+          plaidItemId: item._id
+        });
+      }
+    }
+  },
+});
+```
+
+### Webhook Log Cleanup
+
+The `pruneOldWebhookLogs` mutation deletes webhook logs older than 24 hours:
+
+```typescript
+// Called automatically by cron, or manually:
+await ctx.runMutation(components.plaid.private.pruneOldWebhookLogs, {
+  retentionMs: 24 * 60 * 60 * 1000, // Optional: default 24 hours
+  batchSize: 100,                    // Optional: default 100 per call
+});
+// Returns: { deleted: number, hasMore: boolean }
+```
+
+---
+
+## Data Model
+
+### Tables
+
+All monetary values stored as **MILLIUNITS** (amount × 1000) to avoid float precision errors.
+
+#### `plaidItems`
+
+Connection metadata for each linked bank/institution.
 
 | Field | Type | Description |
-| ----- | ---- | ----------- |
-| `userId` | string | Host app user ID |
-| `itemId` | string | Plaid item_id |
-| `accessToken` | string | JWE encrypted access token |
-| `cursor` | string? | Transaction sync cursor |
-| `institutionId` | string? | Bank identifier |
-| `institutionName` | string? | "Chase", "Wells Fargo", etc. |
-| `status` | string | `pending`, `syncing`, `active`, `error`, `needs_reauth` |
-| `syncError` | string? | Error message from last sync |
-| `createdAt` | number | Unix timestamp |
-| `lastSyncedAt` | number? | Last successful sync timestamp |
+|-------|------|-------------|
+| `userId` | `string` | Host app user ID |
+| `itemId` | `string` | Plaid item_id |
+| `accessToken` | `string` | JWE encrypted access token |
+| `cursor` | `string?` | Transaction sync cursor |
+| `institutionId` | `string?` | Bank identifier |
+| `institutionName` | `string?` | "Chase", "Wells Fargo" |
+| `status` | `enum` | `pending`, `syncing`, `active`, `error`, `needs_reauth` |
+| `syncError` | `string?` | Error message from last sync |
+| `syncVersion` | `number?` | Optimistic lock version (prevents race conditions) |
+| `syncStartedAt` | `number?` | When current sync started (for timeout detection) |
+| `createdAt` | `number` | Unix timestamp |
+| `lastSyncedAt` | `number?` | Last successful sync |
 
-### plaidAccounts
+#### `plaidAccounts`
 
-| Field | Type | Description |
-| ----- | ---- | ----------- |
-| `userId` | string | Host app user ID |
-| `plaidItemId` | string | Reference to plaidItem |
-| `accountId` | string | Plaid account_id |
-| `name` | string | Account name |
-| `type` | string | `credit`, `depository`, `loan` |
-| `subtype` | string? | `credit card`, `checking`, `savings` |
-| `mask` | string? | Last 4 digits |
-| `balances.available` | number? | Available balance (milliunits) |
-| `balances.current` | number? | Current balance (milliunits) |
-| `balances.limit` | number? | Credit limit (milliunits) |
-
-### plaidTransactions
+Bank/credit accounts from Plaid API.
 
 | Field | Type | Description |
-| ----- | ---- | ----------- |
-| `transactionId` | string | Plaid transaction_id |
-| `accountId` | string | Plaid account_id |
-| `amount` | number | Amount in milliunits |
-| `date` | string | ISO date (e.g., "2025-01-15") |
-| `name` | string | Raw transaction name |
-| `merchantName` | string? | Cleaned merchant name |
-| `pending` | boolean | Is pending |
-| `categoryPrimary` | string? | Primary category |
-| `categoryDetailed` | string? | Detailed category |
+|-------|------|-------------|
+| `userId` | `string` | Host app user ID |
+| `plaidItemId` | `string` | Reference to plaidItem |
+| `accountId` | `string` | Plaid account_id |
+| `name` | `string` | "Chase Freedom Unlimited" |
+| `type` | `string` | `credit`, `depository`, `loan` |
+| `subtype` | `string?` | `credit card`, `checking`, `savings` |
+| `mask` | `string?` | Last 4 digits: "1234" |
+| `balances.available` | `number?` | MILLIUNITS |
+| `balances.current` | `number?` | MILLIUNITS |
+| `balances.limit` | `number?` | Credit limit (MILLIUNITS) |
 
-### plaidCreditCardLiabilities
+#### `plaidTransactions`
 
-| Field | Type | Description |
-| ----- | ---- | ----------- |
-| `accountId` | string | Plaid account_id |
-| `aprs` | array | APR entries |
-| `isOverdue` | boolean | Payment overdue |
-| `minimumPaymentAmount` | number? | Minimum payment (milliunits) |
-| `nextPaymentDueDate` | string? | Next due date |
-| `lastStatementBalance` | number? | Statement balance (milliunits) |
-
-### plaidRecurringStreams
+Transaction history with categories.
 
 | Field | Type | Description |
-| ----- | ---- | ----------- |
-| `streamId` | string | Plaid stream_id |
-| `description` | string | Stream name |
-| `merchantName` | string? | Cleaned merchant |
-| `averageAmount` | number | Average amount (milliunits) |
-| `frequency` | string | `WEEKLY`, `BIWEEKLY`, `MONTHLY`, `ANNUALLY` |
-| `status` | string | `MATURE`, `EARLY_DETECTION`, `TOMBSTONED` |
-| `type` | string | `inflow` (income) or `outflow` (expense) |
-| `isActive` | boolean | Currently active |
-| `predictedNextDate` | string? | Next expected date |
+|-------|------|-------------|
+| `transactionId` | `string` | Plaid transaction_id |
+| `accountId` | `string` | Plaid account_id |
+| `amount` | `number` | MILLIUNITS |
+| `date` | `string` | ISO date: "2025-01-15" |
+| `name` | `string` | Raw transaction name |
+| `merchantName` | `string?` | Cleaned merchant name |
+| `pending` | `boolean` | Pending transaction |
+| `categoryPrimary` | `string?` | "FOOD_AND_DRINK" |
+| `categoryDetailed` | `string?` | "FOOD_AND_DRINK_COFFEE" |
 
-## Example App
+#### `plaidCreditCardLiabilities`
 
-Check out the example setup in the [`example/`](./example) directory.
+Credit card APRs, payments, due dates.
 
-## Troubleshooting
+| Field | Type | Description |
+|-------|------|-------------|
+| `accountId` | `string` | Plaid account_id |
+| `aprs` | `array` | APR entries (purchase, cash, balance transfer) |
+| `isOverdue` | `boolean` | Payment overdue |
+| `minimumPaymentAmount` | `number?` | MILLIUNITS |
+| `nextPaymentDueDate` | `string?` | ISO date |
+| `lastStatementBalance` | `number?` | MILLIUNITS |
 
-### "Not authenticated" errors
+#### `plaidRecurringStreams`
 
-The component doesn't use `ctx.auth`. Pass `userId` as a string argument to all methods.
+Detected subscriptions, bills, income.
 
-### Empty data after connecting
+| Field | Type | Description |
+|-------|------|-------------|
+| `streamId` | `string` | Plaid stream_id |
+| `description` | `string` | Stream name |
+| `merchantName` | `string?` | Cleaned merchant |
+| `averageAmount` | `number` | MILLIUNITS |
+| `frequency` | `string` | `WEEKLY`, `BIWEEKLY`, `MONTHLY`, `ANNUALLY` |
+| `status` | `enum` | `MATURE`, `EARLY_DETECTION`, `TOMBSTONED` |
+| `type` | `enum` | `inflow` (income) or `outflow` (expense) |
+| `isActive` | `boolean` | Currently active |
+| `predictedNextDate` | `string?` | Next expected date |
 
-1. Ensure you call `onboardItem` after `exchangePublicToken`
-2. Check the item status - if `error`, check `syncError` field
-3. Verify environment variables are set correctly
+---
 
-### Webhooks not working
+## Security
 
-1. Check webhook URL: `https://<deployment>.convex.site/plaid/webhook`
-2. Verify `plaidConfig` is passed to `registerRoutes`
-3. Check Convex logs for verification errors
+### Access Token Encryption
 
-### Re-auth required
+- Access tokens are encrypted using **JWE (A256GCM)** before storage
+- Encryption key is a 256-bit key, base64-encoded
+- Tokens are decrypted only when making Plaid API calls
+- Token format is validated before decryption (throws `TokenDecryptionError` on invalid format)
+- Access tokens are **never** returned in query results
+
+### Config Validation
+
+- All config fields validated at `Plaid` class construction
+- Invalid config throws `PlaidConfigError` immediately (fail-fast)
+- Validates encryption key is proper base64 and correct length (32 bytes)
+
+### Webhook Verification
+
+- All webhooks verified using Plaid's ES256 JWT signature
+- Body hash validation prevents tampering
+- 5-minute timestamp window prevents replay attacks
+- 24-hour deduplication window prevents duplicate processing
+- Automatic key cache invalidation and retry on Plaid key rotation
+- Failed verification returns 401
+
+### Component Isolation
+
+- Component has its own database tables
+- Host app cannot directly modify component tables
+- All access through public queries/mutations/actions
+
+### Concurrency Protection
+
+- Optimistic locking prevents transaction sync race conditions
+- TOCTOU-safe upsert patterns with duplicate detection and cleanup
+- Sync lock timeout detection (stale locks auto-expire after 5 minutes)
+
+---
+
+## Error Handling
+
+### Item Status
+
+| Status | Meaning | Action |
+|--------|---------|--------|
+| `pending` | Just created | Call `onboardItem` |
+| `syncing` | Sync in progress | Wait |
+| `active` | Ready to use | Normal operation |
+| `error` | Sync failed | Check `syncError`, retry |
+| `needs_reauth` | Credentials expired | Open Update Link |
+
+### Re-auth Flow
 
 When item status is `needs_reauth`:
 
 1. Call `createUpdateLinkToken({ plaidItemId })`
-2. Open Plaid Link in update mode
-3. After user completes, call `completeReauth({ plaidItemId })`
+2. Open Plaid Link with returned token (update mode)
+3. User re-authenticates with their bank
+4. Call `completeReauth({ plaidItemId })`
+5. Item status returns to `active`
 
-## License
+---
 
-MIT
+## Typical Integration Flow
+
+1. **User clicks "Connect Bank"**
+   - Call `createLinkToken` with userId
+   - Open Plaid Link with returned token
+
+2. **User completes Plaid Link**
+   - `onSuccess` callback receives `publicToken`
+   - Call `exchangePublicToken` - returns `plaidItemId`
+
+3. **Initial data sync**
+   - Call `onboardItem({ plaidItemId })`
+   - Fetches accounts, transactions, liabilities, recurring streams
+
+4. **Ongoing sync**
+   - Webhooks auto-trigger on `SYNC_UPDATES_AVAILABLE`
+   - Or call `syncTransactions` manually
+
+5. **Re-auth when needed**
+   - Check for `status === "needs_reauth"`
+   - Use `useUpdatePlaidLink` hook
+
+---
+
+## Files Reference
+
+| Path | Description |
+|------|-------------|
+| `src/client/index.ts` | `Plaid` class, `registerRoutes()` |
+| `src/client/types.ts` | TypeScript interfaces |
+| `src/react/index.ts` | React hooks |
+| `src/component/schema.ts` | Database tables |
+| `src/component/actions.ts` | Plaid API actions |
+| `src/component/public.ts` | Public queries/mutations |
+| `src/component/private.ts` | Internal mutations |
+| `src/component/webhooks.ts` | JWT verification |
+| `src/component/crons.ts` | Scheduled sync actions |
+| `src/component/rateLimiter.ts` | Backoff/retry logic |
+| `src/component/encryption.ts` | JWE encrypt/decrypt |
+| `src/component/utils.ts` | Plaid client init, transforms |
+| `src/component/errors.ts` | Error categorization |
+
+---
+
+## Publishing to npm
+
+This package is published at [`@crowdevelopment/convex-plaid`](https://www.npmjs.com/package/@crowdevelopment/convex-plaid).
+
+### Release Process
+
+1. Update version: `npm version patch|minor|major`
+2. Push with tags: `git push && git push --tags`
+3. Create a GitHub release → triggers automatic publish via GitHub Actions
+
+The workflow (`.github/workflows/publish.yml`) runs: test → typecheck → build → publish.
+
+---
+
+## TODO: Future Plaid Products
+
+The component architecture supports adding new Plaid products. Products are already configurable (not hardcoded) - users can pass any product array to `createLinkToken`, and it's stored per-item in the database.
+
+### Currently Supported Products
+
+| Product | Method | Status |
+|---------|--------|--------|
+| `transactions` | `syncTransactions()` | Implemented |
+| `liabilities` | `fetchLiabilities()` | Implemented |
+| `auth` | via `fetchAccounts()` | Implicit |
+| Recurring | `fetchRecurringStreams()` | Implemented (no product flag needed) |
+
+### Products NOT Yet Implemented
+
+| Product | Priority | Notes |
+|---------|----------|-------|
+| `identity` | Low | KYC/verification use cases |
+| `assets` | Medium | Wealth management, loan underwriting |
+| `investments` | Medium | Brokerage accounts, holdings, securities |
+| `income` | Low | Income verification (different API flow) |
+| `transfer` | Low | ACH transfers (requires separate Plaid setup) |
+| `signal` | Low | ACH return risk scoring |
+
+### How to Add a New Product (e.g., Investments)
+
+1. **No changes to Link** - already accepts any product string via `products` arg
+
+2. **Add schema table** in `src/component/schema.ts`:
+   ```typescript
+   plaidInvestmentHoldings: defineTable({
+     plaidItemId: v.string(),
+     accountId: v.string(),
+     securityId: v.string(),
+     quantity: v.number(),
+     costBasis: v.optional(v.number()), // MILLIUNITS
+     // ... other fields from Plaid API
+   }).index("by_plaidItemId", ["plaidItemId"]),
+   ```
+
+3. **Add private mutation** in `src/component/private.ts`:
+   ```typescript
+   export const upsertInvestmentHolding = internalMutation({ ... })
+   ```
+
+4. **Add action** in `src/component/actions.ts`:
+   ```typescript
+   export const fetchInvestments = action({
+     args: { plaidItemId: v.string(), ...plaidConfigArgs },
+     handler: async (ctx, args) => {
+       const plaidClient = initPlaidClient(...);
+       const response = await plaidClient.investmentsHoldingsGet({ access_token });
+       // Transform and store holdings
+     },
+   });
+   ```
+
+5. **Add client method** in `src/client/index.ts`:
+   ```typescript
+   async fetchInvestments(ctx: ActionCtx, args: { plaidItemId: string }) {
+     return await ctx.runAction(this.component.actions.fetchInvestments, {
+       plaidItemId: args.plaidItemId,
+       ...this.config,
+     });
+   }
+   ```
+
+6. **Add public query** in `src/component/public.ts`:
+   ```typescript
+   export const getInvestmentsByUser = query({ ... })
+   ```
+
+7. **Update `onboardItem`** to optionally fetch investments based on stored products

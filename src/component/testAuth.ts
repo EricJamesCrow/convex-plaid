@@ -6,9 +6,15 @@
  */
 
 import { query } from "./_generated/server.js";
+import { v } from "convex/values";
 
 export const testAuth = query({
   args: {},
+  returns: v.object({
+    hasAuth: v.boolean(),
+    userId: v.union(v.string(), v.null()),
+    error: v.union(v.string(), v.null()),
+  }),
   handler: async (ctx) => {
     // Test if ctx.auth is available
     // This should fail according to Convex documentation:

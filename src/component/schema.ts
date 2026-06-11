@@ -66,6 +66,17 @@ export default defineSchema({
     consecutiveSuccesses: v.optional(v.number()), // Successes in half_open before closing
     lastFailureAt: v.optional(v.number()), // Unix timestamp of last failure
     nextRetryAt: v.optional(v.number()), // When circuit transitions to half_open
+
+    // Flag: Plaid reported new accounts are available at the institution
+    // (ITEM:NEW_ACCOUNTS_AVAILABLE webhook). Cleared on update-mode exchange.
+    newAccountsAvailableAt: v.optional(v.number()),
+
+    // Error-tracking fields for persistent-error email dispatch.
+    // `firstErrorAt` is stamped on transition into error or needs_reauth status
+    // (first-write-wins). `lastDispatchedAt` is stamped by the 6-hour persistent-error
+    // cron on dispatch. Both are cleared on recovery to active status.
+    firstErrorAt: v.optional(v.number()),
+    lastDispatchedAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_item_id", ["itemId"])
@@ -117,8 +128,13 @@ export default defineSchema({
     datetime: v.optional(v.string()), // ISO datetime if available
 
     // Display fields
-    name: v.string(), // Raw transaction name from Plaid
+    name: v.string(), // Plaid's lightly-cleaned transaction name
     merchantName: v.optional(v.string()), // Cleaned merchant name
+    // Raw bank-statement descriptor as Plaid received it (e.g.
+    // "AMAZON MKTPL*B90VX7M20"). Only populated when sync runs with
+    // `options.include_original_description: true`. Used as the optimal
+    // input for /transactions/enrich during backfill.
+    originalDescription: v.optional(v.string()),
     pending: v.boolean(),
     pendingTransactionId: v.optional(v.string()),
 
@@ -148,7 +164,9 @@ export default defineSchema({
     updatedAt: v.optional(v.number()), // Track modifications from sync
   })
     .index("by_account", ["accountId"])
+    .index("by_account_date", ["accountId", "date"])
     .index("by_transaction_id", ["transactionId"])
+    .index("by_user_transaction_id", ["userId", "transactionId"])
     .index("by_date", ["userId", "date"])
     .index("by_plaid_item", ["plaidItemId"])
     .index("by_merchant", ["merchantId"]),
@@ -243,9 +261,18 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_user", ["userId"])
+    .index("by_user_updated_at", ["userId", "updatedAt"])
     .index("by_stream_id", ["streamId"])
     .index("by_plaid_item", ["plaidItemId"])
-    .index("by_status", ["userId", "status", "isActive"]),
+    .index("by_plaid_item_updated_at", ["plaidItemId", "updatedAt"])
+    .index("by_status", ["userId", "status", "isActive"])
+    .index("by_user_status_active_type_updated_at", [
+      "userId",
+      "status",
+      "isActive",
+      "type",
+      "updatedAt",
+    ]),
 
   /**
    * Plaid Mortgage Liabilities - Mortgage loan details
@@ -434,6 +461,7 @@ export default defineSchema({
     scheduledFunctionId: v.optional(v.string()), // Convex scheduled function ID
   })
     .index("by_body_hash", ["bodyHash"])
+    .index("by_body_hash_received_at", ["bodyHash", "receivedAt"])
     .index("by_received_at", ["receivedAt"])
     .index("by_item", ["itemId"])
     .index("by_status", ["status"]),
@@ -488,7 +516,9 @@ export default defineSchema({
     retryCount: v.optional(v.number()), // Number of retries attempted
   })
     .index("by_plaid_item", ["plaidItemId"])
+    .index("by_plaid_item_startedAt", ["plaidItemId", "startedAt"])
     .index("by_user", ["userId"])
+    .index("by_user_startedAt", ["userId", "startedAt"])
     .index("by_status", ["status"])
     .index("by_started_at", ["startedAt"])
     .index("by_trigger", ["trigger"]),

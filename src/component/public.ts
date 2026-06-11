@@ -9,8 +9,10 @@
  */
 
 import { v } from "convex/values";
-import { query, mutation } from "./_generated/server.js";
+import { mutation, query } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import type { Doc } from "./_generated/dataModel.js";
 
 // =============================================================================
 // VALIDATORS (Reusable)
@@ -30,15 +32,48 @@ const aprValidator = v.object({
   interestChargeAmount: v.optional(v.number()),
 });
 
+const DEFAULT_TRANSACTION_LIMIT = 500;
+const MAX_TRANSACTION_LIMIT = 2000;
+const MAX_TRANSACTION_ID_LOOKUP = 500;
+const DEFAULT_RECURRING_STREAM_LIMIT = 250;
+const MAX_RECURRING_STREAM_LIMIT = 1000;
+const DEFAULT_SYNC_LOG_LIMIT = 100;
+const MAX_SYNC_LOG_LIMIT = 500;
+const MAX_SYNC_STATS_LOGS = 1000;
+
+function boundedLimit(
+  limit: number | undefined,
+  defaultLimit: number,
+  maxLimit: number,
+) {
+  if (limit == null || !Number.isFinite(limit)) return defaultLimit;
+  return Math.min(maxLimit, Math.max(1, Math.floor(limit)));
+}
+
+async function getPlaidItemById(
+  ctx: QueryCtx | MutationCtx,
+  plaidItemId: string,
+) {
+  const id = ctx.db.normalizeId("plaidItems", plaidItemId);
+  if (!id) return null;
+  return await ctx.db.get(id);
+}
+
 // =============================================================================
 // PLAID ITEMS QUERIES
 // =============================================================================
 
 /**
- * Validator for plaidItem return type (excludes accessToken for security)
+ * Validator for plaidItem return type (excludes accessToken for security).
+ *
+ * W4 additions: `_creationTime` (Convex system field; used by the host-app
+ * first-link-ever welcome-dispatch trigger), `newAccountsAvailableAt` (used
+ * by update-mode Link clearing + UI banner), `firstErrorAt` /
+ * `lastDispatchedAt` (used by the 6-hour persistent-error cron).
  */
 const plaidItemReturnValidator = v.object({
   _id: v.string(),
+  _creationTime: v.number(),
   userId: v.string(),
   itemId: v.string(),
   institutionId: v.optional(v.string()),
@@ -65,6 +100,10 @@ const plaidItemReturnValidator = v.object({
   consecutiveFailures: v.optional(v.number()),
   lastFailureAt: v.optional(v.number()),
   nextRetryAt: v.optional(v.number()),
+  // W4: new-accounts + error-tracking flags
+  newAccountsAvailableAt: v.optional(v.number()),
+  firstErrorAt: v.optional(v.number()),
+  lastDispatchedAt: v.optional(v.number()),
 });
 
 /**
@@ -86,6 +125,7 @@ export const getItemsByUser = query({
     // Explicitly map fields to avoid complex type inference
     return items.map((item) => ({
       _id: String(item._id),
+      _creationTime: item._creationTime,
       userId: item.userId,
       itemId: item.itemId,
       institutionId: item.institutionId,
@@ -108,6 +148,9 @@ export const getItemsByUser = query({
       consecutiveFailures: item.consecutiveFailures,
       lastFailureAt: item.lastFailureAt,
       nextRetryAt: item.nextRetryAt,
+      newAccountsAvailableAt: item.newAccountsAvailableAt,
+      firstErrorAt: item.firstErrorAt,
+      lastDispatchedAt: item.lastDispatchedAt,
     }));
   },
 });
@@ -132,6 +175,7 @@ export const getItem = query({
     // Explicitly return fields to avoid complex type inference
     return {
       _id: String(item._id),
+      _creationTime: item._creationTime,
       userId: item.userId,
       itemId: item.itemId,
       institutionId: item.institutionId,
@@ -154,6 +198,9 @@ export const getItem = query({
       consecutiveFailures: item.consecutiveFailures,
       lastFailureAt: item.lastFailureAt,
       nextRetryAt: item.nextRetryAt,
+      newAccountsAvailableAt: item.newAccountsAvailableAt,
+      firstErrorAt: item.firstErrorAt,
+      lastDispatchedAt: item.lastDispatchedAt,
     };
   },
 });
@@ -179,6 +226,7 @@ export const getItemByPlaidItemId = query({
 
     return {
       _id: String(item._id),
+      _creationTime: item._creationTime,
       userId: item.userId,
       itemId: item.itemId,
       institutionId: item.institutionId,
@@ -201,6 +249,9 @@ export const getItemByPlaidItemId = query({
       consecutiveFailures: item.consecutiveFailures,
       lastFailureAt: item.lastFailureAt,
       nextRetryAt: item.nextRetryAt,
+      newAccountsAvailableAt: item.newAccountsAvailableAt,
+      firstErrorAt: item.firstErrorAt,
+      lastDispatchedAt: item.lastDispatchedAt,
     };
   },
 });
@@ -227,6 +278,7 @@ export const getAllActiveItems = query({
     // Explicitly map fields to avoid complex type inference
     return activeItems.map((item) => ({
       _id: String(item._id),
+      _creationTime: item._creationTime,
       userId: item.userId,
       itemId: item.itemId,
       institutionId: item.institutionId,
@@ -249,6 +301,9 @@ export const getAllActiveItems = query({
       consecutiveFailures: item.consecutiveFailures,
       lastFailureAt: item.lastFailureAt,
       nextRetryAt: item.nextRetryAt,
+      newAccountsAvailableAt: item.newAccountsAvailableAt,
+      firstErrorAt: item.firstErrorAt,
+      lastDispatchedAt: item.lastDispatchedAt,
     }));
   },
 });
@@ -353,12 +408,70 @@ export const getAccountsByItem = query({
 // TRANSACTIONS QUERIES
 // =============================================================================
 
+const enrichmentDataValidator = v.object({
+  counterpartyName: v.optional(v.string()),
+  counterpartyType: v.optional(v.string()),
+  counterpartyEntityId: v.optional(v.string()),
+  counterpartyConfidence: v.optional(v.string()),
+  counterpartyLogoUrl: v.optional(v.string()),
+  counterpartyWebsite: v.optional(v.string()),
+  counterpartyPhoneNumber: v.optional(v.string()),
+  enrichedAt: v.optional(v.number()),
+});
+
+const transactionReturnValidator = v.object({
+  _id: v.string(),
+  userId: v.string(),
+  plaidItemId: v.string(),
+  accountId: v.string(),
+  transactionId: v.string(),
+  amount: v.number(),
+  isoCurrencyCode: v.string(),
+  date: v.string(),
+  datetime: v.optional(v.string()),
+  name: v.string(),
+  merchantName: v.optional(v.string()),
+  originalDescription: v.optional(v.string()),
+  pending: v.boolean(),
+  pendingTransactionId: v.optional(v.string()),
+  categoryPrimary: v.optional(v.string()),
+  categoryDetailed: v.optional(v.string()),
+  paymentChannel: v.optional(v.string()),
+  enrichmentData: v.optional(enrichmentDataValidator),
+  merchantId: v.optional(v.string()),
+  createdAt: v.number(),
+  updatedAt: v.optional(v.number()),
+});
+
+function mapTransaction(txn: Doc<"plaidTransactions">) {
+  return {
+    _id: String(txn._id),
+    userId: txn.userId,
+    plaidItemId: txn.plaidItemId,
+    accountId: txn.accountId,
+    transactionId: txn.transactionId,
+    amount: txn.amount,
+    isoCurrencyCode: txn.isoCurrencyCode,
+    date: txn.date,
+    datetime: txn.datetime,
+    name: txn.name,
+    merchantName: txn.merchantName,
+    originalDescription: txn.originalDescription,
+    pending: txn.pending,
+    pendingTransactionId: txn.pendingTransactionId,
+    categoryPrimary: txn.categoryPrimary,
+    categoryDetailed: txn.categoryDetailed,
+    paymentChannel: txn.paymentChannel,
+    enrichmentData: txn.enrichmentData,
+    merchantId: txn.merchantId,
+    createdAt: txn.createdAt,
+    updatedAt: txn.updatedAt,
+  };
+}
+
 /**
  * Get transactions for a specific account.
  * Returns most recent first.
- */
-/**
- * Get transactions for a specific account.
  *
  * @security Components cannot access ctx.auth. Host apps must verify ownership
  * of the account before calling this query.
@@ -368,67 +481,20 @@ export const getTransactionsByAccount = query({
     accountId: v.string(),
     limit: v.optional(v.number()),
   },
-  returns: v.array(
-    v.object({
-      _id: v.string(),
-      userId: v.string(),
-      plaidItemId: v.string(),
-      accountId: v.string(),
-      transactionId: v.string(),
-      amount: v.number(),
-      isoCurrencyCode: v.string(),
-      date: v.string(),
-      datetime: v.optional(v.string()),
-      name: v.string(),
-      merchantName: v.optional(v.string()),
-      pending: v.boolean(),
-      categoryPrimary: v.optional(v.string()),
-      categoryDetailed: v.optional(v.string()),
-      enrichmentData: v.optional(
-        v.object({
-          counterpartyName: v.optional(v.string()),
-          counterpartyType: v.optional(v.string()),
-          counterpartyEntityId: v.optional(v.string()),
-          counterpartyConfidence: v.optional(v.string()),
-          counterpartyLogoUrl: v.optional(v.string()),
-          counterpartyWebsite: v.optional(v.string()),
-          counterpartyPhoneNumber: v.optional(v.string()),
-          enrichedAt: v.optional(v.number()),
-        })
-      ),
-      merchantId: v.optional(v.string()),
-      createdAt: v.number(),
-    })
-  ),
+  returns: v.array(transactionReturnValidator),
   handler: async (ctx, args) => {
-    let queryBuilder = ctx.db
+    const limit = boundedLimit(
+      args.limit,
+      DEFAULT_TRANSACTION_LIMIT,
+      MAX_TRANSACTION_LIMIT,
+    );
+    const transactions = await ctx.db
       .query("plaidTransactions")
-      .withIndex("by_account", (q) => q.eq("accountId", args.accountId))
-      .order("desc");
+      .withIndex("by_account_date", (q) => q.eq("accountId", args.accountId))
+      .order("desc")
+      .take(limit);
 
-    const transactions = args.limit
-      ? await queryBuilder.take(args.limit)
-      : await queryBuilder.collect();
-
-    return transactions.map((txn) => ({
-      _id: String(txn._id),
-      userId: txn.userId,
-      plaidItemId: txn.plaidItemId,
-      accountId: txn.accountId,
-      transactionId: txn.transactionId,
-      amount: txn.amount,
-      isoCurrencyCode: txn.isoCurrencyCode,
-      date: txn.date,
-      datetime: txn.datetime,
-      name: txn.name,
-      merchantName: txn.merchantName,
-      pending: txn.pending,
-      categoryPrimary: txn.categoryPrimary,
-      categoryDetailed: txn.categoryDetailed,
-      enrichmentData: txn.enrichmentData,
-      merchantId: txn.merchantId,
-      createdAt: txn.createdAt,
-    }));
+    return transactions.map(mapTransaction);
   },
 });
 
@@ -444,80 +510,62 @@ export const getTransactionsByUser = query({
     startDate: v.optional(v.string()),
     endDate: v.optional(v.string()),
     limit: v.optional(v.number()),
+    transactionIds: v.optional(v.array(v.string())),
   },
-  returns: v.array(
-    v.object({
-      _id: v.string(),
-      userId: v.string(),
-      plaidItemId: v.string(),
-      accountId: v.string(),
-      transactionId: v.string(),
-      amount: v.number(),
-      isoCurrencyCode: v.string(),
-      date: v.string(),
-      datetime: v.optional(v.string()),
-      name: v.string(),
-      merchantName: v.optional(v.string()),
-      pending: v.boolean(),
-      categoryPrimary: v.optional(v.string()),
-      categoryDetailed: v.optional(v.string()),
-      enrichmentData: v.optional(
-        v.object({
-          counterpartyName: v.optional(v.string()),
-          counterpartyType: v.optional(v.string()),
-          counterpartyEntityId: v.optional(v.string()),
-          counterpartyConfidence: v.optional(v.string()),
-          counterpartyLogoUrl: v.optional(v.string()),
-          counterpartyWebsite: v.optional(v.string()),
-          counterpartyPhoneNumber: v.optional(v.string()),
-          enrichedAt: v.optional(v.number()),
-        })
-      ),
-      merchantId: v.optional(v.string()),
-      createdAt: v.number(),
-    })
-  ),
+  returns: v.array(transactionReturnValidator),
   handler: async (ctx, args) => {
-    // Query by userId, then filter by date range in JavaScript
-    // This is simpler than trying to use compound index range queries
-    let transactions = await ctx.db
+    const limit = boundedLimit(
+      args.limit,
+      DEFAULT_TRANSACTION_LIMIT,
+      MAX_TRANSACTION_LIMIT,
+    );
+
+    if (args.transactionIds && args.transactionIds.length > 0) {
+      const uniqueIds = [...new Set(args.transactionIds)].slice(
+        0,
+        Math.min(MAX_TRANSACTION_ID_LOOKUP, limit),
+      );
+      const rows = await Promise.all(
+        uniqueIds.map((transactionId) =>
+          ctx.db
+            .query("plaidTransactions")
+            .withIndex("by_user_transaction_id", (q) =>
+              q.eq("userId", args.userId).eq("transactionId", transactionId),
+            )
+            .order("desc")
+            .first(),
+        ),
+      );
+      const byTransactionId = new Map(
+        rows
+          .filter((txn): txn is Doc<"plaidTransactions"> => txn !== null)
+          .map((txn) => [txn.transactionId, txn]),
+      );
+      return uniqueIds
+        .map((transactionId) => byTransactionId.get(transactionId))
+        .filter((txn): txn is Doc<"plaidTransactions"> => txn != null)
+        .map(mapTransaction);
+    }
+
+    const transactions = await ctx.db
       .query("plaidTransactions")
-      .withIndex("by_date", (q) => q.eq("userId", args.userId))
+      .withIndex("by_date", (q) => {
+        const byUser = q.eq("userId", args.userId);
+        if (args.startDate && args.endDate) {
+          return byUser.gte("date", args.startDate).lte("date", args.endDate);
+        }
+        if (args.startDate) {
+          return byUser.gte("date", args.startDate);
+        }
+        if (args.endDate) {
+          return byUser.lte("date", args.endDate);
+        }
+        return byUser;
+      })
       .order("desc")
-      .collect();
+      .take(limit);
 
-    // Apply date range filters
-    if (args.startDate) {
-      transactions = transactions.filter((t) => t.date >= args.startDate!);
-    }
-    if (args.endDate) {
-      transactions = transactions.filter((t) => t.date <= args.endDate!);
-    }
-
-    // Apply limit
-    if (args.limit) {
-      transactions = transactions.slice(0, args.limit);
-    }
-
-    return transactions.map((txn) => ({
-      _id: String(txn._id),
-      userId: txn.userId,
-      plaidItemId: txn.plaidItemId,
-      accountId: txn.accountId,
-      transactionId: txn.transactionId,
-      amount: txn.amount,
-      isoCurrencyCode: txn.isoCurrencyCode,
-      date: txn.date,
-      datetime: txn.datetime,
-      name: txn.name,
-      merchantName: txn.merchantName,
-      pending: txn.pending,
-      categoryPrimary: txn.categoryPrimary,
-      categoryDetailed: txn.categoryDetailed,
-      enrichmentData: txn.enrichmentData,
-      merchantId: txn.merchantId,
-      createdAt: txn.createdAt,
-    }));
+    return transactions.map(mapTransaction);
   },
 });
 
@@ -1106,9 +1154,13 @@ const recurringStreamReturnValidator = v.object({
   lastAmount: v.number(),
   isoCurrencyCode: v.string(),
   frequency: v.string(),
-  status: v.string(),
+  status: v.union(
+    v.literal("MATURE"),
+    v.literal("EARLY_DETECTION"),
+    v.literal("TOMBSTONED"),
+  ),
   isActive: v.boolean(),
-  type: v.string(),
+  type: v.union(v.literal("inflow"), v.literal("outflow")),
   category: v.optional(v.string()),
   firstDate: v.optional(v.string()),
   lastDate: v.optional(v.string()),
@@ -1117,6 +1169,31 @@ const recurringStreamReturnValidator = v.object({
   updatedAt: v.number(),
 });
 
+function mapRecurringStream(stream: Doc<"plaidRecurringStreams">) {
+  return {
+    _id: String(stream._id),
+    userId: stream.userId,
+    plaidItemId: stream.plaidItemId,
+    streamId: stream.streamId,
+    accountId: stream.accountId,
+    description: stream.description,
+    merchantName: stream.merchantName,
+    averageAmount: stream.averageAmount,
+    lastAmount: stream.lastAmount,
+    isoCurrencyCode: stream.isoCurrencyCode,
+    frequency: stream.frequency,
+    status: stream.status,
+    isActive: stream.isActive,
+    type: stream.type,
+    category: stream.category,
+    firstDate: stream.firstDate,
+    lastDate: stream.lastDate,
+    predictedNextDate: stream.predictedNextDate,
+    createdAt: stream.createdAt,
+    updatedAt: stream.updatedAt,
+  };
+}
+
 /**
  * Get all recurring streams for a user.
  *
@@ -1124,37 +1201,21 @@ const recurringStreamReturnValidator = v.object({
  * before calling this query.
  */
 export const getRecurringStreamsByUser = query({
-  args: { userId: v.string() },
+  args: { userId: v.string(), limit: v.optional(v.number()) },
   returns: v.array(recurringStreamReturnValidator),
   handler: async (ctx, args) => {
+    const limit = boundedLimit(
+      args.limit,
+      DEFAULT_RECURRING_STREAM_LIMIT,
+      MAX_RECURRING_STREAM_LIMIT,
+    );
     const streams = await ctx.db
       .query("plaidRecurringStreams")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
+      .withIndex("by_user_updated_at", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(limit);
 
-    // Explicitly map fields to avoid including _creationTime from Convex
-    return streams.map((stream) => ({
-      _id: String(stream._id),
-      userId: stream.userId,
-      plaidItemId: stream.plaidItemId,
-      streamId: stream.streamId,
-      accountId: stream.accountId,
-      description: stream.description,
-      merchantName: stream.merchantName,
-      averageAmount: stream.averageAmount,
-      lastAmount: stream.lastAmount,
-      isoCurrencyCode: stream.isoCurrencyCode,
-      frequency: stream.frequency,
-      status: stream.status,
-      isActive: stream.isActive,
-      type: stream.type,
-      category: stream.category,
-      firstDate: stream.firstDate,
-      lastDate: stream.lastDate,
-      predictedNextDate: stream.predictedNextDate,
-      createdAt: stream.createdAt,
-      updatedAt: stream.updatedAt,
-    }));
+    return streams.map(mapRecurringStream);
   },
 });
 
@@ -1165,37 +1226,23 @@ export const getRecurringStreamsByUser = query({
  * of the plaidItem before calling this query.
  */
 export const getRecurringStreamsByItem = query({
-  args: { plaidItemId: v.string() },
+  args: { plaidItemId: v.string(), limit: v.optional(v.number()) },
   returns: v.array(recurringStreamReturnValidator),
   handler: async (ctx, args) => {
+    const limit = boundedLimit(
+      args.limit,
+      DEFAULT_RECURRING_STREAM_LIMIT,
+      MAX_RECURRING_STREAM_LIMIT,
+    );
     const streams = await ctx.db
       .query("plaidRecurringStreams")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
+      .withIndex("by_plaid_item_updated_at", (q) =>
+        q.eq("plaidItemId", args.plaidItemId),
+      )
+      .order("desc")
+      .take(limit);
 
-    // Explicitly map fields to avoid including _creationTime from Convex
-    return streams.map((stream) => ({
-      _id: String(stream._id),
-      userId: stream.userId,
-      plaidItemId: stream.plaidItemId,
-      streamId: stream.streamId,
-      accountId: stream.accountId,
-      description: stream.description,
-      merchantName: stream.merchantName,
-      averageAmount: stream.averageAmount,
-      lastAmount: stream.lastAmount,
-      isoCurrencyCode: stream.isoCurrencyCode,
-      frequency: stream.frequency,
-      status: stream.status,
-      isActive: stream.isActive,
-      type: stream.type,
-      category: stream.category,
-      firstDate: stream.firstDate,
-      lastDate: stream.lastDate,
-      predictedNextDate: stream.predictedNextDate,
-      createdAt: stream.createdAt,
-      updatedAt: stream.updatedAt,
-    }));
+    return streams.map(mapRecurringStream);
   },
 });
 
@@ -1207,42 +1254,27 @@ export const getRecurringStreamsByItem = query({
  * before calling this query.
  */
 export const getActiveSubscriptions = query({
-  args: { userId: v.string() },
+  args: { userId: v.string(), limit: v.optional(v.number()) },
   returns: v.array(recurringStreamReturnValidator),
   handler: async (ctx, args) => {
+    const limit = boundedLimit(
+      args.limit,
+      DEFAULT_RECURRING_STREAM_LIMIT,
+      MAX_RECURRING_STREAM_LIMIT,
+    );
     const streams = await ctx.db
       .query("plaidRecurringStreams")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
+      .withIndex("by_user_status_active_type_updated_at", (q) =>
+        q
+          .eq("userId", args.userId)
+          .eq("status", "MATURE")
+          .eq("isActive", true)
+          .eq("type", "outflow"),
+      )
+      .order("desc")
+      .take(limit);
 
-    // Filter for active subscriptions
-    const subscriptions = streams.filter(
-      (s) => s.status === "MATURE" && s.type === "outflow" && s.isActive
-    );
-
-    // Explicitly map fields to avoid including _creationTime from Convex
-    return subscriptions.map((stream) => ({
-      _id: String(stream._id),
-      userId: stream.userId,
-      plaidItemId: stream.plaidItemId,
-      streamId: stream.streamId,
-      accountId: stream.accountId,
-      description: stream.description,
-      merchantName: stream.merchantName,
-      averageAmount: stream.averageAmount,
-      lastAmount: stream.lastAmount,
-      isoCurrencyCode: stream.isoCurrencyCode,
-      frequency: stream.frequency,
-      status: stream.status,
-      isActive: stream.isActive,
-      type: stream.type,
-      category: stream.category,
-      firstDate: stream.firstDate,
-      lastDate: stream.lastDate,
-      predictedNextDate: stream.predictedNextDate,
-      createdAt: stream.createdAt,
-      updatedAt: stream.updatedAt,
-    }));
+    return streams.map(mapRecurringStream);
   },
 });
 
@@ -1254,42 +1286,27 @@ export const getActiveSubscriptions = query({
  * before calling this query.
  */
 export const getRecurringIncome = query({
-  args: { userId: v.string() },
+  args: { userId: v.string(), limit: v.optional(v.number()) },
   returns: v.array(recurringStreamReturnValidator),
   handler: async (ctx, args) => {
+    const limit = boundedLimit(
+      args.limit,
+      DEFAULT_RECURRING_STREAM_LIMIT,
+      MAX_RECURRING_STREAM_LIMIT,
+    );
     const streams = await ctx.db
       .query("plaidRecurringStreams")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
+      .withIndex("by_user_status_active_type_updated_at", (q) =>
+        q
+          .eq("userId", args.userId)
+          .eq("status", "MATURE")
+          .eq("isActive", true)
+          .eq("type", "inflow"),
+      )
+      .order("desc")
+      .take(limit);
 
-    // Filter for active income streams
-    const income = streams.filter(
-      (s) => s.status === "MATURE" && s.type === "inflow" && s.isActive
-    );
-
-    // Explicitly map fields to avoid including _creationTime from Convex
-    return income.map((stream) => ({
-      _id: String(stream._id),
-      userId: stream.userId,
-      plaidItemId: stream.plaidItemId,
-      streamId: stream.streamId,
-      accountId: stream.accountId,
-      description: stream.description,
-      merchantName: stream.merchantName,
-      averageAmount: stream.averageAmount,
-      lastAmount: stream.lastAmount,
-      isoCurrencyCode: stream.isoCurrencyCode,
-      frequency: stream.frequency,
-      status: stream.status,
-      isActive: stream.isActive,
-      type: stream.type,
-      category: stream.category,
-      firstDate: stream.firstDate,
-      lastDate: stream.lastDate,
-      predictedNextDate: stream.predictedNextDate,
-      createdAt: stream.createdAt,
-      updatedAt: stream.updatedAt,
-    }));
+    return streams.map(mapRecurringStream);
   },
 });
 
@@ -1311,15 +1328,17 @@ export const getSubscriptionsSummary = query({
     annualCount: v.number(),
   }),
   handler: async (ctx, args) => {
-    const streams = await ctx.db
+    const subscriptions = await ctx.db
       .query("plaidRecurringStreams")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-
-    // Filter for active subscriptions
-    const subscriptions = streams.filter(
-      (s) => s.status === "MATURE" && s.type === "outflow" && s.isActive
-    );
+      .withIndex("by_user_status_active_type_updated_at", (q) =>
+        q
+          .eq("userId", args.userId)
+          .eq("status", "MATURE")
+          .eq("isActive", true)
+          .eq("type", "outflow"),
+      )
+      .order("desc")
+      .take(MAX_RECURRING_STREAM_LIMIT);
 
     let monthlyTotal = 0;
     let weeklyCount = 0;
@@ -1388,17 +1407,52 @@ const syncLogReturnValidator = v.object({
   _id: v.string(),
   plaidItemId: v.string(),
   userId: v.string(),
-  syncType: v.string(),
-  trigger: v.string(),
+  syncType: v.union(
+    v.literal("transactions"),
+    v.literal("liabilities"),
+    v.literal("recurring"),
+    v.literal("accounts"),
+    v.literal("onboard"),
+  ),
+  trigger: v.union(
+    v.literal("webhook"),
+    v.literal("scheduled"),
+    v.literal("manual"),
+    v.literal("onboard"),
+  ),
   startedAt: v.number(),
   completedAt: v.optional(v.number()),
   durationMs: v.optional(v.number()),
-  status: v.string(),
+  status: v.union(
+    v.literal("started"),
+    v.literal("success"),
+    v.literal("error"),
+    v.literal("rate_limited"),
+    v.literal("circuit_open"),
+  ),
   result: syncResultValidator,
   errorCode: v.optional(v.string()),
   errorMessage: v.optional(v.string()),
   retryCount: v.optional(v.number()),
 });
+
+function mapSyncLog(log: Doc<"syncLogs">) {
+  return {
+    _id: String(log._id),
+    plaidItemId: log.plaidItemId,
+    userId: log.userId,
+    syncType: log.syncType,
+    trigger: log.trigger,
+    startedAt: log.startedAt,
+    completedAt: log.completedAt,
+    durationMs: log.durationMs,
+    status: log.status,
+    result: log.result,
+    errorCode: log.errorCode,
+    errorMessage: log.errorMessage,
+    retryCount: log.retryCount,
+  };
+}
 
 /**
  * Get sync logs for a specific plaidItem.
@@ -1414,31 +1468,16 @@ export const getSyncLogsByItem = query({
   },
   returns: v.array(syncLogReturnValidator),
   handler: async (ctx, args) => {
-    let queryBuilder = ctx.db
+    const limit = boundedLimit(args.limit, DEFAULT_SYNC_LOG_LIMIT, MAX_SYNC_LOG_LIMIT);
+    const logs = await ctx.db
       .query("syncLogs")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .order("desc");
+      .withIndex("by_plaid_item_startedAt", (q) =>
+        q.eq("plaidItemId", args.plaidItemId),
+      )
+      .order("desc")
+      .take(limit);
 
-    const logs = args.limit
-      ? await queryBuilder.take(args.limit)
-      : await queryBuilder.collect();
-
-    // Explicitly map fields to avoid including _creationTime from Convex
-    return logs.map((log) => ({
-      _id: String(log._id),
-      plaidItemId: log.plaidItemId,
-      userId: log.userId,
-      syncType: log.syncType,
-      trigger: log.trigger,
-      startedAt: log.startedAt,
-      completedAt: log.completedAt,
-      durationMs: log.durationMs,
-      status: log.status,
-      result: log.result,
-      errorCode: log.errorCode,
-      errorMessage: log.errorMessage,
-      retryCount: log.retryCount,
-    }));
+    return logs.map(mapSyncLog);
   },
 });
 
@@ -1456,31 +1495,14 @@ export const getSyncLogsByUser = query({
   },
   returns: v.array(syncLogReturnValidator),
   handler: async (ctx, args) => {
-    let queryBuilder = ctx.db
+    const limit = boundedLimit(args.limit, DEFAULT_SYNC_LOG_LIMIT, MAX_SYNC_LOG_LIMIT);
+    const logs = await ctx.db
       .query("syncLogs")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .order("desc");
+      .withIndex("by_user_startedAt", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(limit);
 
-    const logs = args.limit
-      ? await queryBuilder.take(args.limit)
-      : await queryBuilder.collect();
-
-    // Explicitly map fields to avoid including _creationTime from Convex
-    return logs.map((log) => ({
-      _id: String(log._id),
-      plaidItemId: log.plaidItemId,
-      userId: log.userId,
-      syncType: log.syncType,
-      trigger: log.trigger,
-      startedAt: log.startedAt,
-      completedAt: log.completedAt,
-      durationMs: log.durationMs,
-      status: log.status,
-      result: log.result,
-      errorCode: log.errorCode,
-      errorMessage: log.errorMessage,
-      retryCount: log.retryCount,
-    }));
+    return logs.map(mapSyncLog);
   },
 });
 
@@ -1513,11 +1535,13 @@ export const getSyncStats = query({
 
     const logs = await ctx.db
       .query("syncLogs")
-      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
+      .withIndex("by_plaid_item_startedAt", (q) =>
+        q.eq("plaidItemId", args.plaidItemId).gte("startedAt", cutoff),
+      )
+      .order("desc")
+      .take(MAX_SYNC_STATS_LOGS);
 
-    // Filter to recent logs
-    const recentLogs = logs.filter((log) => log.startedAt >= cutoff);
+    const recentLogs = logs;
 
     const successLogs = recentLogs.filter((log) => log.status === "success");
     const errorLogs = recentLogs.filter(
@@ -1631,5 +1655,368 @@ export const getAllInstitutions = query({
       products: inst.products,
       lastFetched: inst.lastFetched,
     }));
+  },
+});
+
+// =============================================================================
+// W4: HOST-INTERNAL ITEM STATE MUTATIONS
+// =============================================================================
+
+/**
+ * Host-exposed internal entry points for webhook and cron state maintained by
+ * the component. These live in the public module because Convex components do
+ * not expose the private module across the host/component boundary.
+ */
+export const setNewAccountsAvailableInternal = mutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    await ctx.db.patch(item._id, { newAccountsAvailableAt: Date.now() });
+    return null;
+  },
+});
+
+export const clearNewAccountsAvailableInternal = mutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    await ctx.db.patch(item._id, { newAccountsAvailableAt: undefined });
+    return null;
+  },
+});
+
+export const markFirstErrorAtInternal = mutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    if (item.firstErrorAt == null) {
+      await ctx.db.patch(item._id, { firstErrorAt: Date.now() });
+    }
+    return null;
+  },
+});
+
+export const clearErrorTrackingInternal = mutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    await ctx.db.patch(item._id, {
+      firstErrorAt: undefined,
+      lastDispatchedAt: undefined,
+    });
+    return null;
+  },
+});
+
+export const markItemErrorDispatchedInternal = mutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    await ctx.db.patch(item._id, { lastDispatchedAt: Date.now() });
+    return null;
+  },
+});
+
+export const listErrorItemsInternal = query({
+  args: {
+    olderThanLastSyncedAt: v.number(),
+    dispatchedBefore: v.number(),
+  },
+  returns: v.array(
+    v.object({
+      plaidItemId: v.string(),
+      userId: v.string(),
+      institutionName: v.union(v.string(), v.null()),
+      firstErrorAt: v.union(v.number(), v.null()),
+      errorAt: v.union(v.number(), v.null()),
+      errorCode: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const items = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_status", (q) => q.eq("status", "error"))
+      .collect();
+
+    return items
+      .filter((item) => (item.lastSyncedAt ?? 0) < args.olderThanLastSyncedAt)
+      .filter((item) => (item.lastDispatchedAt ?? 0) < args.dispatchedBefore)
+      .map((item) => ({
+        plaidItemId: String(item._id),
+        userId: item.userId,
+        institutionName: item.institutionName ?? null,
+        firstErrorAt: item.firstErrorAt ?? null,
+        errorAt: item.errorAt ?? null,
+        errorCode: item.errorCode ?? null,
+      }));
+  },
+});
+
+// =============================================================================
+// W4: ITEM HEALTH
+// =============================================================================
+
+import { derive, type InstitutionSnapshot } from "./health.js";
+
+const reasonCodeValidator = v.union(
+  v.literal("healthy"),
+  v.literal("syncing_initial"),
+  v.literal("syncing_incremental"),
+  v.literal("auth_required_login"),
+  v.literal("auth_required_expiration"),
+  v.literal("transient_circuit_open"),
+  v.literal("transient_institution_down"),
+  v.literal("transient_rate_limited"),
+  v.literal("permanent_invalid_token"),
+  v.literal("permanent_item_not_found"),
+  v.literal("permanent_no_accounts"),
+  v.literal("permanent_access_not_granted"),
+  v.literal("permanent_products_not_supported"),
+  v.literal("permanent_institution_unsupported"),
+  v.literal("permanent_revoked"),
+  v.literal("permanent_unknown"),
+  v.literal("new_accounts_available"),
+);
+
+const itemHealthValidator = v.object({
+  plaidItemId: v.string(),
+  itemId: v.string(),
+  state: v.union(
+    v.literal("syncing"),
+    v.literal("ready"),
+    v.literal("error"),
+    v.literal("re-consent-required"),
+  ),
+  recommendedAction: v.union(
+    v.literal("reconnect"),
+    v.literal("reconnect_for_new_accounts"),
+    v.literal("wait"),
+    v.literal("contact_support"),
+    v.null(),
+  ),
+  reasonCode: reasonCodeValidator,
+  isActive: v.boolean(),
+  institutionId: v.union(v.string(), v.null()),
+  institutionName: v.union(v.string(), v.null()),
+  institutionLogoBase64: v.union(v.string(), v.null()),
+  institutionPrimaryColor: v.union(v.string(), v.null()),
+  lastSyncedAt: v.union(v.number(), v.null()),
+  lastWebhookAt: v.union(v.number(), v.null()),
+  errorCode: v.union(v.string(), v.null()),
+  errorMessage: v.union(v.string(), v.null()),
+  circuitState: v.union(
+    v.literal("closed"),
+    v.literal("open"),
+    v.literal("half_open"),
+  ),
+  consecutiveFailures: v.number(),
+  nextRetryAt: v.union(v.number(), v.null()),
+  newAccountsAvailableAt: v.union(v.number(), v.null()),
+});
+
+async function getInstitutionSnapshot(
+  ctx: QueryCtx,
+  institutionId: string | undefined,
+): Promise<InstitutionSnapshot> {
+  if (!institutionId) {
+    return {
+      institutionId: null,
+      institutionName: null,
+      institutionLogoBase64: null,
+      institutionPrimaryColor: null,
+    };
+  }
+  const inst = await ctx.db
+    .query("plaidInstitutions")
+    .withIndex("by_institution_id", (q) =>
+      q.eq("institutionId", institutionId),
+    )
+    .first();
+  if (!inst) {
+    return {
+      institutionId,
+      institutionName: null,
+      institutionLogoBase64: null,
+      institutionPrimaryColor: null,
+    };
+  }
+  return {
+    institutionId: inst.institutionId,
+    institutionName: inst.name ?? null,
+    institutionLogoBase64: inst.logo ?? null,
+    institutionPrimaryColor: inst.primaryColor ?? null,
+  };
+}
+
+async function getLastWebhookAt(
+  ctx: QueryCtx,
+  itemId: string,
+): Promise<number | null> {
+  const log = await ctx.db
+    .query("webhookLogs")
+    .withIndex("by_item", (q) => q.eq("itemId", itemId))
+    .order("desc")
+    .first();
+  return log?.receivedAt ?? null;
+}
+
+const webhookStatusValidator = v.union(
+  v.literal("received"),
+  v.literal("processing"),
+  v.literal("processed"),
+  v.literal("duplicate"),
+  v.literal("failed"),
+);
+
+function isWebhookDedupeCandidate(status: string) {
+  return status === "received" || status === "processing";
+}
+
+/**
+ * Record a Plaid webhook receipt and detect in-flight duplicate deliveries.
+ *
+ * @security Components cannot verify webhook signatures. The host app must
+ * call this only after signature verification or in an approved sandbox mode.
+ */
+export const recordWebhookReceived = mutation({
+  args: {
+    itemId: v.string(),
+    webhookType: v.string(),
+    webhookCode: v.string(),
+    bodyHash: v.string(),
+    receivedAt: v.number(),
+    dedupeWindowMs: v.optional(v.number()),
+  },
+  returns: v.object({
+    webhookLogId: v.string(),
+    duplicate: v.boolean(),
+    duplicateOf: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const cutoff = args.receivedAt - (args.dedupeWindowMs ?? 24 * 60 * 60 * 1000);
+    const recent = await ctx.db
+      .query("webhookLogs")
+      .withIndex("by_body_hash_received_at", (q) =>
+        q.eq("bodyHash", args.bodyHash).gte("receivedAt", cutoff)
+      )
+      .order("desc")
+      .take(10);
+    const duplicateOf = recent.find(
+      (log) => isWebhookDedupeCandidate(log.status),
+    );
+    const status = duplicateOf ? "duplicate" : "received";
+    const id = await ctx.db.insert("webhookLogs", {
+      webhookId: `${args.itemId}:${args.webhookType}:${args.webhookCode}:${args.receivedAt}`,
+      itemId: args.itemId,
+      webhookType: args.webhookType,
+      webhookCode: args.webhookCode,
+      bodyHash: args.bodyHash,
+      receivedAt: args.receivedAt,
+      status,
+    });
+
+    return {
+      webhookLogId: String(id),
+      duplicate: Boolean(duplicateOf),
+      duplicateOf: duplicateOf ? String(duplicateOf._id) : undefined,
+    };
+  },
+});
+
+/**
+ * Update a Plaid webhook processing log.
+ */
+export const updateWebhookProcessingStatus = mutation({
+  args: {
+    webhookLogId: v.string(),
+    status: webhookStatusValidator,
+    processedAt: v.optional(v.number()),
+    errorMessage: v.optional(v.string()),
+    scheduledFunctionId: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const id = ctx.db.normalizeId("webhookLogs", args.webhookLogId);
+    if (!id) return null;
+    const log = await ctx.db.get(id);
+    if (!log) return null;
+
+    await ctx.db.patch(log._id, {
+      status: args.status,
+      processedAt: args.processedAt,
+      errorMessage: args.errorMessage,
+      scheduledFunctionId: args.scheduledFunctionId,
+    });
+    return null;
+  },
+});
+
+/**
+ * Get health for a single plaidItem.
+ *
+ * @security Components cannot access ctx.auth. Host apps must verify the caller
+ * owns this item before returning data.
+ */
+export const getItemHealth = query({
+  args: { plaidItemId: v.string() },
+  returns: itemHealthValidator,
+  handler: async (ctx, args) => {
+    const normalizedId = ctx.db.normalizeId("plaidItems", args.plaidItemId);
+    if (!normalizedId) {
+      throw new Error(`Plaid item not found: ${args.plaidItemId}`);
+    }
+    const item = await ctx.db.get(normalizedId);
+    if (!item) {
+      throw new Error(`Plaid item not found: ${args.plaidItemId}`);
+    }
+    const institution = await getInstitutionSnapshot(ctx, item.institutionId);
+    const lastWebhookAt = await getLastWebhookAt(ctx, item.itemId);
+    return derive(
+      { ...item, _id: String(item._id) },
+      institution,
+      lastWebhookAt,
+    );
+  },
+});
+
+/**
+ * Get health for every non-deleting plaidItem owned by userId.
+ *
+ * Filters `status === "deleting"` rows out of the list so the UI does not
+ * render mid-cascade-delete items.
+ *
+ * @security Components cannot access ctx.auth. Host apps must validate userId
+ * before calling this query.
+ */
+export const getItemHealthByUser = query({
+  args: { userId: v.string() },
+  returns: v.array(itemHealthValidator),
+  handler: async (ctx, args) => {
+    const items = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    const visible = items.filter((i) => i.status !== "deleting");
+    return await Promise.all(
+      visible.map(async (item) => {
+        const institution = await getInstitutionSnapshot(ctx, item.institutionId);
+        const lastWebhookAt = await getLastWebhookAt(ctx, item.itemId);
+        return derive(
+          { ...item, _id: String(item._id) },
+          institution,
+          lastWebhookAt,
+        );
+      }),
+    );
   },
 });

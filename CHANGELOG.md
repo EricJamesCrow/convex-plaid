@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - Unreleased
+
+Upstreams six months of development from the SmartPockets monorepo fork. All
+changes are additive — no breaking API or schema changes.
+
+### Added
+
+#### Item Health API
+- **`health.ts`** — item health derivation (`getItemHealth`, `getItemHealthByUser`
+  public queries): maps item status + error state to a UI-ready health shape
+- **`reasonCode.ts`** — error-code → `ReasonCode` taxonomy (`mapErrorCodeToReason`),
+  exported for host-app error UX
+
+#### Persistent Error Tracking
+- `plaidItems.firstErrorAt` / `lastDispatchedAt` (optional fields) plus internal
+  mutations (`markFirstErrorAtInternal`, `clearErrorTrackingInternal`,
+  `markItemErrorDispatchedInternal`, `listErrorItemsInternal`) so host apps can
+  run persistent-error notification crons without duplicate dispatches
+
+#### New Accounts Available Flow
+- `plaidItems.newAccountsAvailableAt` + set/clear internal mutations
+- `createUpdateLinkToken({ mode: "reauth" | "account_select" })` optional mode
+  for Plaid update-mode Link with new-account selection
+
+#### Transaction Enrichment Backfill
+- **`backfillTransactionEnrichments()`** client method + supporting action:
+  re-enriches historical transactions (per-account-type request partitioning,
+  counterparty selection)
+- `plaidTransactions.originalDescription` (optional) — raw bank descriptor
+  retained for enrichment
+
+#### Test Coverage (5 → 17 files)
+- **`webhooks.test.ts`** — full JWT verification pipeline: ES256 signature
+  validity, body-hash binding, iat replay protection, algorithm pinning, key
+  caching, and the key-rotation refetch path (previously untested)
+- Sync idempotency, webhook dedupe, error tracking, health, reason codes,
+  enrichment partitioning/counterparty selection, update-link mode, public
+  query scale, new-accounts flow
+
+### Changed
+- Query-scale indexes added on `plaidRecurringStreams`, `webhookLogs`, `syncLogs`
+- Institution metadata fetch deduplicated; logo caching improved
+- Dependencies: `plaid` ^42, `convex` ^1.39 (dev), TypeScript 6, vitest 4;
+  `react-plaid-link` peer range widened to `^3 || ^4`
+- `tsconfig.json` now sets `"types": ["node"]` (TypeScript 6 compatibility)
+
+### Removed
+- Broken `lint` script (`eslint .` with no eslint installed — never worked)
+- Stale `pnpm-lock.yaml` (npm is the package manager here)
+
+## [0.7.1] – [0.7.3] - 2026-01-17 / 2026-02-02
+
+Patch releases (backfilled entries):
+- **0.7.1** — version bump with packaging fixes after 0.7.0
+- **0.7.3** — renamed `test-auth.ts` → `testAuth.ts` for Convex module-name
+  compatibility (hyphenated filenames are rejected by the Convex bundler)
+
 ## [0.7.0] - 2026-01-16
 
 ### Added

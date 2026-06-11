@@ -1,7 +1,7 @@
 {
   "name": "@crowdevelopment/convex-plaid",
   "description": "A Plaid component for Convex - bank accounts, transactions, and liabilities.",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -26,7 +26,6 @@
     "clean": "rm -rf dist *.tsbuildinfo",
     "build": "tsc --project ./tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
     "test": "vitest run --typecheck",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest --typecheck --clearScreen false",
@@ -68,7 +67,7 @@
   "peerDependencies": {
     "convex": "^1.29.0",
     "react": "^18.0.0 || ^19.0.0",
-    "react-plaid-link": "^3.0.0"
+    "react-plaid-link": "^3.0.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {
     "react": {
@@ -79,25 +78,26 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/react": "^18.0.0",
-    "@vitest/coverage-v8": "^3.2.4",
+    "@types/node": "^25.8.0",
+    "@types/react": "^19.2.14",
+    "@vitest/coverage-v8": "^4.1.6",
     "chokidar-cli": "^3.0.0",
-    "convex": "^1.29.0",
-    "convex-test": "^0.0.40",
-    "npm-run-all2": "^8.0.0",
+    "convex": "^1.39.1",
+    "convex-test": "^0.0.52",
+    "npm-run-all2": "^8.0.4",
     "path-exists-cli": "^2.0.0",
-    "react": "^18.0.0",
-    "react-plaid-link": "^3.0.0",
-    "typescript": "^5.0.0",
-    "vitest": "^3.0.0"
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-plaid-link": "^4.1.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   },
   "dependencies": {
-    "@inquirer/prompts": "^7.2.0",
-    "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "jose": "^6.0.0",
-    "plaid": "^41.0.0"
+    "@inquirer/prompts": "^8.4.3",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "jose": "^6.2.3",
+    "plaid": "^42.2.0"
   },
   "types": "./dist/client/index.d.ts",
   "module": "./dist/client/index.js"

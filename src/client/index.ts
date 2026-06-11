@@ -19,6 +19,7 @@ import type {
   FetchAccountsResult,
   SyncTransactionsResult,
   SyncTransactionsOptions,
+  BackfillTransactionEnrichmentsResult,
   FetchLiabilitiesResult,
   OnboardItemResult,
   FetchRecurringStreamsResult,
@@ -33,6 +34,7 @@ import type {
   SyncStats,
   InstitutionMetadata,
   PlaidAccount,
+  PlaidAccountFilters,
   PlaidItem,
   PlaidItemStatus,
   CircuitState,
@@ -146,6 +148,12 @@ export type PlaidComponent = Pick<ComponentApi, "actions" | "public">;
  */
 export type { ComponentApi };
 
+// W4: reason-code taxonomy re-exported at the package boundary so host apps
+// can import via `@crowdevelopment/convex-plaid`.
+export type { ReasonCode } from "../component/reasonCode.js";
+export { mapErrorCodeToReason } from "../component/reasonCode.js";
+export type { ItemHealth } from "../component/health.js";
+
 export type {
   PlaidConfig,
   RegisterRoutesConfig,
@@ -172,6 +180,7 @@ export type {
   InstitutionMetadata,
   // Account types
   PlaidAccount,
+  PlaidAccountFilters,
   // PlaidItem types
   PlaidItem,
   PlaidItemStatus,
@@ -239,15 +248,17 @@ export class Plaid {
     args: {
       userId: string;
       products?: string[];
+      accountFilters?: PlaidAccountFilters;
       countryCodes?: string[];
       language?: string;
       clientName?: string;
       webhookUrl?: string;
     }
   ): Promise<CreateLinkTokenResult> {
-    return await ctx.runAction(this.component.actions.createLinkToken, {
+    const createLinkTokenArgs = {
       userId: args.userId,
       products: args.products,
+      accountFilters: args.accountFilters,
       countryCodes: args.countryCodes,
       language: args.language,
       clientName: args.clientName,
@@ -255,7 +266,13 @@ export class Plaid {
       plaidClientId: this.config.PLAID_CLIENT_ID,
       plaidSecret: this.config.PLAID_SECRET,
       plaidEnv: this.config.PLAID_ENV,
-    });
+    };
+
+    // Cast preserves compatibility until component codegen is refreshed.
+    return await ctx.runAction(
+      this.component.actions.createLinkToken,
+      createLinkTokenArgs as any
+    );
   }
 
   /**
@@ -341,6 +358,34 @@ export class Plaid {
   }
 
   /**
+   * Backfill merchant enrichment for transactions that were synced before
+   * Plaid-provided merchant/logo fields were stored.
+   *
+   * This does not update item cursors or insert missing transactions.
+   *
+   * @param plaidItemId - Convex document ID of the plaidItem (as string)
+   * @param options - Optional pagination limits (maxPages, maxTransactions)
+   */
+  async backfillTransactionEnrichments(
+    ctx: ActionCtx,
+    args: {
+      plaidItemId: string;
+    } & SyncTransactionsOptions
+  ): Promise<BackfillTransactionEnrichmentsResult> {
+    const actions = this.component.actions as any;
+    const result = await ctx.runAction(actions.backfillTransactionEnrichments, {
+      plaidItemId: args.plaidItemId,
+      maxPages: args.maxPages,
+      maxTransactions: args.maxTransactions,
+      plaidClientId: this.config.PLAID_CLIENT_ID,
+      plaidSecret: this.config.PLAID_SECRET,
+      plaidEnv: this.config.PLAID_ENV,
+      encryptionKey: this.config.ENCRYPTION_KEY,
+    });
+    return result as BackfillTransactionEnrichmentsResult;
+  }
+
+  /**
    * Fetch and store liability data (credit cards, mortgages, student loans).
    *
    * @param plaidItemId - Convex document ID of the plaidItem (as string)
@@ -391,14 +436,21 @@ export class Plaid {
   }
 
   /**
-   * Enrich transactions with merchant data using Plaid Enrich API.
+   * Enrich transactions with merchant data using Plaid /transactions/enrich.
    *
-   * Takes a batch of transactions and enriches them with:
-   * - Counterparty name, type, and entity ID
-   * - Merchant logo URL and website
-   * - Confidence level
+   * The caller MUST tag each transaction with its source `account_type`
+   * (`"credit"` or `"depository"`). Plaid's Enrich API accepts only one
+   * account_type per request and uses it to interpret transaction direction
+   * and route through its merchant database. Mis-typing credit-card
+   * transactions as depository materially degrades match rate, so the
+   * action splits inputs into per-account-type batches and makes one API
+   * call per type.
    *
-   * Results are cached in merchantEnrichments table and linked to transactions.
+   * `description` should be the raw bank-statement descriptor (Plaid's
+   * `original_description` field) when available, falling back to `name`.
+   *
+   * Results are cached in `merchantEnrichments` and linked to each
+   * transaction's `merchantId` + `enrichmentData`.
    */
   async enrichTransactions(
     ctx: ActionCtx,
@@ -408,6 +460,7 @@ export class Plaid {
         description: string;
         amount: number;
         direction: "INFLOW" | "OUTFLOW";
+        account_type: "credit" | "depository";
         iso_currency_code?: string;
         mcc?: string;
         location?: {
@@ -468,10 +521,15 @@ export class Plaid {
     ctx: ActionCtx,
     args: {
       plaidItemId: string;
+      // "reauth" (default) opens update mode for expired credentials.
+      // "account_select" opens update mode with account-selection enabled,
+      // used when the institution reports new accounts are available.
+      mode?: "reauth" | "account_select";
     }
   ): Promise<CreateUpdateLinkTokenResult> {
     return await ctx.runAction(this.component.actions.createUpdateLinkToken, {
       plaidItemId: args.plaidItemId,
+      mode: args.mode,
       plaidClientId: this.config.PLAID_CLIENT_ID,
       plaidSecret: this.config.PLAID_SECRET,
       plaidEnv: this.config.PLAID_ENV,

@@ -6,6 +6,9 @@
 
     "target": "ESNext",
     "lib": ["ES2021", "dom", "DOM.Iterable"],
+    // TypeScript 6 no longer auto-includes node_modules/@types the way 5.x
+    // did; Buffer usage in client/index.ts needs node ambient types.
+    "types": ["node"],
     "forceConsistentCasingInFileNames": true,
     "allowSyntheticDefaultImports": true,
     "noErrorTruncation": true,

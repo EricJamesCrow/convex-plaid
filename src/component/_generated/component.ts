@@ -24,6 +24,28 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     actions: {
+      backfillTransactionEnrichments: FunctionReference<
+        "action",
+        "internal",
+        {
+          encryptionKey: string;
+          maxPages?: number;
+          maxTransactions?: number;
+          plaidClientId: string;
+          plaidEnv: string;
+          plaidItemId: string;
+          plaidSecret: string;
+        },
+        {
+          hasMore: boolean;
+          matched: number;
+          merchantsUpserted: number;
+          pagesProcessed: number;
+          scanned: number;
+          updated: number;
+        },
+        Name
+      >;
       completeReauth: FunctionReference<
         "action",
         "internal",
@@ -35,6 +57,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "action",
         "internal",
         {
+          accountFilters?: any;
           clientName?: string;
           countryCodes?: Array<string>;
           language?: string;
@@ -53,6 +76,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           encryptionKey: string;
+          mode?: "reauth" | "account_select";
           plaidClientId: string;
           plaidEnv: string;
           plaidItemId: string;
@@ -70,8 +94,10 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           plaidEnv: string;
           plaidSecret: string;
           transactions: Array<{
+            account_type: "credit" | "depository";
             amount: number;
             description: string;
+            direction: "INFLOW" | "OUTFLOW";
             id: string;
             iso_currency_code?: string;
             location?: {
@@ -179,21 +205,25 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
     };
     public: {
+      clearErrorTrackingInternal: FunctionReference<
+        "mutation",
+        "internal",
+        { plaidItemId: string },
+        null,
+        Name
+      >;
+      clearNewAccountsAvailableInternal: FunctionReference<
+        "mutation",
+        "internal",
+        { plaidItemId: string },
+        null,
+        Name
+      >;
       deletePlaidItem: FunctionReference<
         "mutation",
         "internal",
         { plaidItemId: string },
-        {
-          deleted: {
-            accounts: number;
-            creditCardLiabilities: number;
-            items: number;
-            mortgageLiabilities: number;
-            recurringStreams: number;
-            studentLoanLiabilities: number;
-            transactions: number;
-          };
-        },
+        { message: string; status: "scheduled" | "not_found" },
         Name
       >;
       getAccountsByItem: FunctionReference<
@@ -247,7 +277,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       getActiveSubscriptions: FunctionReference<
         "query",
         "internal",
-        { userId: string },
+        { limit?: number; userId: string },
         Array<{
           _id: string;
           accountId: string;
@@ -264,10 +294,45 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           merchantName?: string;
           plaidItemId: string;
           predictedNextDate?: string;
-          status: string;
+          status: "EARLY_DETECTION" | "MATURE" | "TOMBSTONED";
           streamId: string;
-          type: string;
+          type: "inflow" | "outflow";
           updatedAt: number;
+          userId: string;
+        }>,
+        Name
+      >;
+      getAllActiveItems: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<{
+          _creationTime: number;
+          _id: string;
+          activatedAt?: number;
+          circuitState?: string;
+          consecutiveFailures?: number;
+          createdAt: number;
+          disconnectedAt?: number;
+          disconnectedReason?: string;
+          errorAt?: number;
+          errorCode?: string;
+          errorMessage?: string;
+          firstErrorAt?: number;
+          institutionId?: string;
+          institutionName?: string;
+          isActive?: boolean;
+          itemId: string;
+          lastDispatchedAt?: number;
+          lastFailureAt?: number;
+          lastSyncedAt?: number;
+          newAccountsAvailableAt?: number;
+          nextRetryAt?: number;
+          products: Array<string>;
+          reauthAt?: number;
+          reauthReason?: string;
+          status: string;
+          syncError?: string;
           userId: string;
         }>,
         Name
@@ -309,6 +374,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { plaidItemId: string },
         {
+          _creationTime: number;
           _id: string;
           activatedAt?: number;
           circuitState?: string;
@@ -319,12 +385,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorAt?: number;
           errorCode?: string;
           errorMessage?: string;
+          firstErrorAt?: number;
           institutionId?: string;
           institutionName?: string;
           isActive?: boolean;
           itemId: string;
+          lastDispatchedAt?: number;
           lastFailureAt?: number;
           lastSyncedAt?: number;
+          newAccountsAvailableAt?: number;
           nextRetryAt?: number;
           products: Array<string>;
           reauthAt?: number;
@@ -335,11 +404,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         } | null,
         Name
       >;
-      getItemsByUser: FunctionReference<
+      getItemByPlaidItemId: FunctionReference<
         "query",
         "internal",
-        { userId: string },
-        Array<{
+        { itemId: string },
+        {
+          _creationTime: number;
           _id: string;
           activatedAt?: number;
           circuitState?: string;
@@ -350,12 +420,146 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorAt?: number;
           errorCode?: string;
           errorMessage?: string;
+          firstErrorAt?: number;
           institutionId?: string;
           institutionName?: string;
           isActive?: boolean;
           itemId: string;
+          lastDispatchedAt?: number;
           lastFailureAt?: number;
           lastSyncedAt?: number;
+          newAccountsAvailableAt?: number;
+          nextRetryAt?: number;
+          products: Array<string>;
+          reauthAt?: number;
+          reauthReason?: string;
+          status: string;
+          syncError?: string;
+          userId: string;
+        } | null,
+        Name
+      >;
+      getItemHealth: FunctionReference<
+        "query",
+        "internal",
+        { plaidItemId: string },
+        {
+          circuitState: "closed" | "open" | "half_open";
+          consecutiveFailures: number;
+          errorCode: string | null;
+          errorMessage: string | null;
+          institutionId: string | null;
+          institutionLogoBase64: string | null;
+          institutionName: string | null;
+          institutionPrimaryColor: string | null;
+          isActive: boolean;
+          itemId: string;
+          lastSyncedAt: number | null;
+          lastWebhookAt: number | null;
+          newAccountsAvailableAt: number | null;
+          nextRetryAt: number | null;
+          plaidItemId: string;
+          reasonCode:
+            | "healthy"
+            | "syncing_initial"
+            | "syncing_incremental"
+            | "auth_required_login"
+            | "auth_required_expiration"
+            | "transient_circuit_open"
+            | "transient_institution_down"
+            | "transient_rate_limited"
+            | "permanent_invalid_token"
+            | "permanent_item_not_found"
+            | "permanent_no_accounts"
+            | "permanent_access_not_granted"
+            | "permanent_products_not_supported"
+            | "permanent_institution_unsupported"
+            | "permanent_revoked"
+            | "permanent_unknown"
+            | "new_accounts_available";
+          recommendedAction:
+            | "reconnect"
+            | "reconnect_for_new_accounts"
+            | "wait"
+            | "contact_support"
+            | null;
+          state: "syncing" | "ready" | "error" | "re-consent-required";
+        },
+        Name
+      >;
+      getItemHealthByUser: FunctionReference<
+        "query",
+        "internal",
+        { userId: string },
+        Array<{
+          circuitState: "closed" | "open" | "half_open";
+          consecutiveFailures: number;
+          errorCode: string | null;
+          errorMessage: string | null;
+          institutionId: string | null;
+          institutionLogoBase64: string | null;
+          institutionName: string | null;
+          institutionPrimaryColor: string | null;
+          isActive: boolean;
+          itemId: string;
+          lastSyncedAt: number | null;
+          lastWebhookAt: number | null;
+          newAccountsAvailableAt: number | null;
+          nextRetryAt: number | null;
+          plaidItemId: string;
+          reasonCode:
+            | "healthy"
+            | "syncing_initial"
+            | "syncing_incremental"
+            | "auth_required_login"
+            | "auth_required_expiration"
+            | "transient_circuit_open"
+            | "transient_institution_down"
+            | "transient_rate_limited"
+            | "permanent_invalid_token"
+            | "permanent_item_not_found"
+            | "permanent_no_accounts"
+            | "permanent_access_not_granted"
+            | "permanent_products_not_supported"
+            | "permanent_institution_unsupported"
+            | "permanent_revoked"
+            | "permanent_unknown"
+            | "new_accounts_available";
+          recommendedAction:
+            | "reconnect"
+            | "reconnect_for_new_accounts"
+            | "wait"
+            | "contact_support"
+            | null;
+          state: "syncing" | "ready" | "error" | "re-consent-required";
+        }>,
+        Name
+      >;
+      getItemsByUser: FunctionReference<
+        "query",
+        "internal",
+        { userId: string },
+        Array<{
+          _creationTime: number;
+          _id: string;
+          activatedAt?: number;
+          circuitState?: string;
+          consecutiveFailures?: number;
+          createdAt: number;
+          disconnectedAt?: number;
+          disconnectedReason?: string;
+          errorAt?: number;
+          errorCode?: string;
+          errorMessage?: string;
+          firstErrorAt?: number;
+          institutionId?: string;
+          institutionName?: string;
+          isActive?: boolean;
+          itemId: string;
+          lastDispatchedAt?: number;
+          lastFailureAt?: number;
+          lastSyncedAt?: number;
+          newAccountsAvailableAt?: number;
           nextRetryAt?: number;
           products: Array<string>;
           reauthAt?: number;
@@ -522,7 +726,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       getRecurringIncome: FunctionReference<
         "query",
         "internal",
-        { userId: string },
+        { limit?: number; userId: string },
         Array<{
           _id: string;
           accountId: string;
@@ -539,9 +743,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           merchantName?: string;
           plaidItemId: string;
           predictedNextDate?: string;
-          status: string;
+          status: "EARLY_DETECTION" | "MATURE" | "TOMBSTONED";
           streamId: string;
-          type: string;
+          type: "inflow" | "outflow";
           updatedAt: number;
           userId: string;
         }>,
@@ -550,7 +754,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       getRecurringStreamsByItem: FunctionReference<
         "query",
         "internal",
-        { plaidItemId: string },
+        { limit?: number; plaidItemId: string },
         Array<{
           _id: string;
           accountId: string;
@@ -567,9 +771,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           merchantName?: string;
           plaidItemId: string;
           predictedNextDate?: string;
-          status: string;
+          status: "EARLY_DETECTION" | "MATURE" | "TOMBSTONED";
           streamId: string;
-          type: string;
+          type: "inflow" | "outflow";
           updatedAt: number;
           userId: string;
         }>,
@@ -578,7 +782,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       getRecurringStreamsByUser: FunctionReference<
         "query",
         "internal",
-        { userId: string },
+        { limit?: number; userId: string },
         Array<{
           _id: string;
           accountId: string;
@@ -595,9 +799,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           merchantName?: string;
           plaidItemId: string;
           predictedNextDate?: string;
-          status: string;
+          status: "EARLY_DETECTION" | "MATURE" | "TOMBSTONED";
           streamId: string;
-          type: string;
+          type: "inflow" | "outflow";
           updatedAt: number;
           userId: string;
         }>,
@@ -793,12 +997,27 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           createdAt: number;
           date: string;
           datetime?: string;
+          enrichmentData?: {
+            counterpartyConfidence?: string;
+            counterpartyEntityId?: string;
+            counterpartyLogoUrl?: string;
+            counterpartyName?: string;
+            counterpartyPhoneNumber?: string;
+            counterpartyType?: string;
+            counterpartyWebsite?: string;
+            enrichedAt?: number;
+          };
           isoCurrencyCode: string;
+          merchantId?: string;
           merchantName?: string;
           name: string;
+          originalDescription?: string;
           pending: boolean;
+          paymentChannel?: string;
+          pendingTransactionId?: string;
           plaidItemId: string;
           transactionId: string;
+          updatedAt?: number;
           userId: string;
         }>,
         Name
@@ -810,6 +1029,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           endDate?: string;
           limit?: number;
           startDate?: string;
+          transactionIds?: Array<string>;
           userId: string;
         },
         Array<{
@@ -821,14 +1041,78 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           createdAt: number;
           date: string;
           datetime?: string;
+          enrichmentData?: {
+            counterpartyConfidence?: string;
+            counterpartyEntityId?: string;
+            counterpartyLogoUrl?: string;
+            counterpartyName?: string;
+            counterpartyPhoneNumber?: string;
+            counterpartyType?: string;
+            counterpartyWebsite?: string;
+            enrichedAt?: number;
+          };
           isoCurrencyCode: string;
+          merchantId?: string;
           merchantName?: string;
           name: string;
+          originalDescription?: string;
           pending: boolean;
+          paymentChannel?: string;
+          pendingTransactionId?: string;
           plaidItemId: string;
           transactionId: string;
+          updatedAt?: number;
           userId: string;
         }>,
+        Name
+      >;
+      listErrorItemsInternal: FunctionReference<
+        "query",
+        "internal",
+        { dispatchedBefore: number; olderThanLastSyncedAt: number },
+        Array<{
+          errorAt: number | null;
+          errorCode: string | null;
+          firstErrorAt: number | null;
+          institutionName: string | null;
+          plaidItemId: string;
+          userId: string;
+        }>,
+        Name
+      >;
+      markFirstErrorAtInternal: FunctionReference<
+        "mutation",
+        "internal",
+        { plaidItemId: string },
+        null,
+        Name
+      >;
+      markItemErrorDispatchedInternal: FunctionReference<
+        "mutation",
+        "internal",
+        { plaidItemId: string },
+        null,
+        Name
+      >;
+      recordWebhookReceived: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          bodyHash: string;
+          dedupeWindowMs?: number;
+          itemId: string;
+          receivedAt: number;
+          webhookCode: string;
+          webhookType: string;
+        },
+        { duplicate: boolean; duplicateOf?: string; webhookLogId: string },
+        Name
+      >;
+      setNewAccountsAvailableInternal: FunctionReference<
+        "mutation",
+        "internal",
+        { plaidItemId: string },
+        null,
         Name
       >;
       setPlaidItemActive: FunctionReference<
@@ -843,6 +1127,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { itemId: string },
         { isActive: boolean },
+        Name
+      >;
+      updateWebhookProcessingStatus: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          errorMessage?: string;
+          processedAt?: number;
+          scheduledFunctionId?: string;
+          status:
+            | "received"
+            | "processing"
+            | "processed"
+            | "duplicate"
+            | "failed";
+          webhookLogId: string;
+        },
+        null,
+        Name
+      >;
+    };
+    testAuth: {
+      testAuth: FunctionReference<
+        "query",
+        "internal",
+        {},
+        { error: string | null; hasAuth: boolean; userId: string | null },
         Name
       >;
     };

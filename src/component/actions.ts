@@ -13,13 +13,16 @@
  */
 
 import { v } from "convex/values";
-import { action } from "./_generated/server.js";
+import { action, type ActionCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import {
   initPlaidClient,
   convertAmountToMilliunits,
   transformTransaction,
   syncTransactionsPaginated,
+  normalizePlaidProducts,
+  selectMerchantCounterparty,
+  partitionEnrichmentInput,
 } from "./utils.js";
 import { encryptToken, decryptToken } from "./encryption.js";
 import { categorizeError, requiresReauth, formatErrorForLog } from "./errors.js";
@@ -35,6 +38,50 @@ const plaidConfigArgs = {
   encryptionKey: v.string(),
 };
 
+type BackfillTransactionEnrichmentsResult = {
+  scanned: number;
+  matched: number;
+  updated: number;
+  merchantsUpserted: number;
+  hasMore: boolean;
+  pagesProcessed: number;
+};
+
+/**
+ * Loads institution branding from Plaid (/institutions/get_by_id) into the
+ * shared plaidInstitutions cache (logo, primary color, etc.).
+ *
+ * @returns institution display name when successful
+ */
+async function fetchAndUpsertInstitutionMetadata(
+  ctx: ActionCtx,
+  plaidClient: ReturnType<typeof initPlaidClient>,
+  institutionId: string,
+): Promise<string | undefined> {
+  try {
+    const instResponse = await plaidClient.institutionsGetById({
+      institution_id: institutionId,
+      country_codes: ["US"] as any[],
+      options: {
+        include_optional_metadata: true,
+      },
+    });
+    const institution = instResponse.data.institution;
+    await ctx.runMutation(internal.private.upsertInstitution, {
+      institutionId,
+      name: institution.name,
+      logo: institution.logo ?? undefined,
+      primaryColor: institution.primary_color ?? undefined,
+      url: institution.url ?? undefined,
+      products: institution.products ?? undefined,
+    });
+    return institution.name;
+  } catch (e) {
+    console.warn("[Plaid Component] Failed to fetch institution details:", e);
+    return undefined;
+  }
+}
+
 // =============================================================================
 // CREATE LINK TOKEN
 // =============================================================================
@@ -49,6 +96,7 @@ export const createLinkToken = action({
   args: {
     userId: v.string(),
     products: v.optional(v.array(v.string())),
+    accountFilters: v.optional(v.any()),
     countryCodes: v.optional(v.array(v.string())),
     language: v.optional(v.string()),
     clientName: v.optional(v.string()),
@@ -74,7 +122,8 @@ export const createLinkToken = action({
         client_user_id: args.userId,
       },
       client_name: args.clientName ?? "App",
-      products: (args.products ?? ["transactions", "liabilities"]) as any[],
+      products: normalizePlaidProducts(args.products) as any[],
+      account_filters: args.accountFilters as any,
       country_codes: (args.countryCodes ?? ["US"]) as any[],
       language: args.language ?? "en",
       transactions: {
@@ -145,33 +194,16 @@ export const exchangePublicToken = action({
 
     const institutionId = itemResponse.data.item.institution_id ?? undefined;
 
-    // Fetch institution details and cache metadata (logo, branding)
     let institutionName: string | undefined;
     if (institutionId) {
-      try {
-        const instResponse = await plaidClient.institutionsGetById({
-          institution_id: institutionId,
-          country_codes: ["US"] as any[],
-          options: {
-            include_optional_metadata: true,
-          },
-        });
-        const institution = instResponse.data.institution;
-        institutionName = institution.name;
+      institutionName = await fetchAndUpsertInstitutionMetadata(
+        ctx,
+        plaidClient,
+        institutionId,
+      );
+      if (institutionName) {
         console.log("[Plaid Component] Institution:", institutionName);
-
-        // Cache institution metadata (shared across users for efficiency)
-        await ctx.runMutation(internal.private.upsertInstitution, {
-          institutionId,
-          name: institution.name,
-          logo: institution.logo ?? undefined,
-          primaryColor: institution.primary_color ?? undefined,
-          url: institution.url ?? undefined,
-          products: institution.products ?? undefined,
-        });
         console.log("[Plaid Component] Institution metadata cached");
-      } catch (e) {
-        console.warn("[Plaid Component] Failed to fetch institution details:", e);
       }
     }
 
@@ -179,15 +211,15 @@ export const exchangePublicToken = action({
     console.log("[Plaid Component] Encrypting access token...");
     const encryptedToken = await encryptToken(accessToken, args.encryptionKey);
 
-    // Create plaidItem in component database
-    // products defaults to ["transactions"] if not specified
+    // Create plaidItem in component database.
+    // Credit-card tracking requires both transactions and liabilities data.
     const plaidItemId: string = await ctx.runMutation(internal.private.createPlaidItem, {
       userId: args.userId,
       itemId,
       accessToken: encryptedToken,
       institutionId,
       institutionName,
-      products: args.products ?? ["transactions"],
+      products: normalizePlaidProducts(args.products),
       isActive: true, // Default to active when created
       status: "pending",
     });
@@ -223,7 +255,7 @@ export const fetchAccounts = action({
   returns: v.object({
     accountCount: v.number(),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{ accountCount: number }> => {
     // Get plaidItem
     const item = await ctx.runQuery(internal.private.getPlaidItem, {
       plaidItemId: args.plaidItemId,
@@ -252,6 +284,28 @@ export const fetchAccounts = action({
         args.plaidSecret,
         args.plaidEnv
       );
+
+      let institutionId = item.institutionId;
+      if (!institutionId) {
+        try {
+          const itemResp = await plaidClient.itemGet({
+            access_token: accessToken,
+          });
+          institutionId = itemResp.data.item.institution_id ?? undefined;
+        } catch (e) {
+          console.warn(
+            "[Plaid Component] itemGet failed while resolving institution_id:",
+            e,
+          );
+        }
+      }
+      if (institutionId) {
+        await fetchAndUpsertInstitutionMetadata(
+          ctx,
+          plaidClient,
+          institutionId,
+        );
+      }
 
       const accountsResponse = await plaidClient.accountsGet({
         access_token: accessToken,
@@ -515,16 +569,92 @@ export const syncTransactions = action({
         errorMessage: plaidError.message,
       });
 
-      // Release lock with error status
+      // Release lock with error status. W4: pass errorCode through so the
+      // 6-hour persistent-error cron (which reads plaidItems.errorCode) has
+      // the data it needs to dispatch a best-effort alert.
       await ctx.runMutation(internal.private.releaseSyncLock, {
         plaidItemId: args.plaidItemId,
         syncVersion,
         status: requiresReauth(plaidError) ? "needs_reauth" : "error",
         syncError: plaidError.message,
+        errorCode: plaidError.code,
       });
 
       throw error;
     }
+  },
+});
+
+// =============================================================================
+// BACKFILL TRANSACTION ENRICHMENTS
+// =============================================================================
+
+/**
+ * Backfill merchant enrichment for already-stored transactions.
+ *
+ * This refetches transaction history from an empty sync cursor, transforms only
+ * Plaid-provided merchant/logo fields, and patches matching existing rows. It
+ * intentionally does not update the Plaid item cursor or insert transactions.
+ */
+export const backfillTransactionEnrichments = action({
+  args: {
+    plaidItemId: v.string(),
+    maxPages: v.optional(v.number()),
+    maxTransactions: v.optional(v.number()),
+    ...plaidConfigArgs,
+  },
+  returns: v.object({
+    scanned: v.number(),
+    matched: v.number(),
+    updated: v.number(),
+    merchantsUpserted: v.number(),
+    hasMore: v.boolean(),
+    pagesProcessed: v.number(),
+  }),
+  handler: async (ctx, args): Promise<BackfillTransactionEnrichmentsResult> => {
+    console.log(
+      `[Plaid Component] Backfilling transaction enrichments for ${args.plaidItemId}...`
+    );
+
+    const item = await ctx.runQuery(internal.private.getPlaidItem, {
+      plaidItemId: args.plaidItemId,
+    });
+
+    if (!item) {
+      throw new Error(`Plaid item not found: ${args.plaidItemId}`);
+    }
+
+    const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
+    const plaidClient = initPlaidClient(
+      args.plaidClientId,
+      args.plaidSecret,
+      args.plaidEnv
+    );
+
+    const syncResult = await syncTransactionsPaginated(plaidClient, accessToken, "", {
+      maxPages: args.maxPages,
+      maxTransactions: args.maxTransactions,
+    });
+    const transactions = [...syncResult.added, ...syncResult.modified].map((transaction) =>
+      transformTransaction(transaction)
+    );
+
+    const backfillResult: Omit<
+      BackfillTransactionEnrichmentsResult,
+      "hasMore" | "pagesProcessed"
+    > = await ctx.runMutation(
+      (internal.private as any).backfillTransactionEnrichments,
+      {
+        plaidItemId: args.plaidItemId,
+        transactions,
+      }
+    );
+
+    return {
+      ...backfillResult,
+      hasMore: syncResult.hasMore,
+      pagesProcessed: syncResult.pagesProcessed,
+    };
   },
 });
 
@@ -971,6 +1101,12 @@ export const createUpdateLinkToken = action({
   args: {
     plaidItemId: v.string(),
     ...plaidConfigArgs,
+    // W4: "reauth" is default existing behavior. "account_select" opens update
+    // mode with account-selection enabled, used by the NEW_ACCOUNTS_AVAILABLE
+    // flow so the user can add newly-available accounts at the institution.
+    mode: v.optional(
+      v.union(v.literal("reauth"), v.literal("account_select"))
+    ),
   },
   returns: v.object({
     linkToken: v.string(),
@@ -988,7 +1124,9 @@ export const createUpdateLinkToken = action({
     // Decrypt access token
     const accessToken = await decryptToken(item.accessToken, args.encryptionKey);
 
-    console.log("[Plaid Component] Creating update link token for re-auth...");
+    console.log(
+      `[Plaid Component] Creating update link token (mode: ${args.mode ?? "reauth"})...`
+    );
 
     const plaidClient = initPlaidClient(
       args.plaidClientId,
@@ -996,7 +1134,9 @@ export const createUpdateLinkToken = action({
       args.plaidEnv
     );
 
-    // Create link token in update mode (with access_token)
+    // Create link token in update mode (with access_token).
+    // When mode === "account_select", pass update.account_selection_enabled = true
+    // so the user can add newly-available accounts at the institution.
     const response = await plaidClient.linkTokenCreate({
       user: {
         client_user_id: item.userId,
@@ -1005,6 +1145,10 @@ export const createUpdateLinkToken = action({
       access_token: accessToken, // This triggers update mode
       country_codes: ["US"] as any[],
       language: "en",
+      update:
+        args.mode === "account_select"
+          ? { account_selection_enabled: true }
+          : undefined,
     });
 
     console.log("[Plaid Component] Update link token created successfully");
@@ -1055,14 +1199,25 @@ export const completeReauth = action({
 // =============================================================================
 
 /**
- * Enrich transactions with merchant data using Plaid Enrich API.
+ * Enrich transactions with merchant data using Plaid `/transactions/enrich`.
  *
- * Takes a batch of transactions and enriches them with:
- * - Counterparty name, type, and entity ID
- * - Merchant logo URL and website
- * - Confidence level
+ * Returns counterparty name + entity_id + logo + confidence level for each
+ * transaction Plaid recognizes. Results are upserted into `merchantEnrichments`
+ * (de-duped by entity_id) and linked back to the transaction row via
+ * `merchantId` + `enrichmentData`.
  *
- * Results are cached in merchantEnrichments table and linked to transactions.
+ * The caller MUST tag each transaction with its source `account_type`
+ * (`"credit"` or `"depository"`). Plaid's Enrich API accepts only one
+ * `account_type` per request and uses it to interpret transaction direction
+ * and route through its merchant database. Mis-typing credit-card transactions
+ * as depository materially degrades match rate. Transactions whose source
+ * account is `"loan"` / `"investment"` / `"other"` are silently skipped —
+ * the API rejects those types entirely.
+ *
+ * `description` should be the raw bank-statement descriptor (Plaid's
+ * `original_description` field) when available, falling back to `name`. The
+ * cleaned `merchant_name` produces poor match rates because Plaid's
+ * enrichment heuristics expect the messy raw form.
  */
 export const enrichTransactions = action({
   args: {
@@ -1072,6 +1227,7 @@ export const enrichTransactions = action({
         description: v.string(),
         amount: v.number(),
         direction: v.union(v.literal("INFLOW"), v.literal("OUTFLOW")),
+        account_type: v.union(v.literal("credit"), v.literal("depository")),
         iso_currency_code: v.optional(v.string()),
         mcc: v.optional(v.string()),
         location: v.optional(
@@ -1105,93 +1261,105 @@ export const enrichTransactions = action({
       args.plaidEnv
     );
 
-    // Prepare transactions for Plaid Enrich API
-    // Note: amount must be absolute value (>= 0), direction indicates flow
-    const enrichmentTransactions = args.transactions.map((tx) => ({
-      id: tx.id,
-      description: tx.description,
-      amount: Math.abs(tx.amount), // Plaid requires positive amounts
-      direction: tx.direction,
-      iso_currency_code: tx.iso_currency_code ?? "USD",
-      mcc: tx.mcc,
-      location: tx.location
-        ? {
-            city: tx.location.city,
-            region: tx.location.region,
-            postal_code: tx.location.postal_code,
-            country: tx.location.country,
-          }
-        : undefined,
-    }));
-
-    try {
-      const response = await plaidClient.transactionsEnrich({
-        account_type: "depository",
-        transactions: enrichmentTransactions as any,
-      });
-
-      let enriched = 0;
-      let failed = 0;
-
-      // Cast to any since Plaid SDK types may not include all enrichment properties
-      for (const enrichedTx of response.data.enriched_transactions as any[]) {
-        const counterparty = enrichedTx.counterparties?.[0];
-
-        if (counterparty?.entity_id) {
-          // Upsert merchant enrichment
-          await ctx.runMutation(internal.private.upsertMerchantEnrichment, {
-            merchantId: counterparty.entity_id,
-            merchantName: counterparty.name,
-            logoUrl: counterparty.logo_url ?? undefined,
-            categoryPrimary: enrichedTx.personal_finance_category?.primary,
-            categoryDetailed: enrichedTx.personal_finance_category?.detailed,
-            categoryIconUrl:
-              enrichedTx.personal_finance_category_icon_url ?? undefined,
-            website: counterparty.website ?? undefined,
-            phoneNumber: counterparty.phone_number ?? undefined,
-            confidenceLevel:
-              (counterparty.confidence_level as
-                | "VERY_HIGH"
-                | "HIGH"
-                | "MEDIUM"
-                | "LOW"
-                | "UNKNOWN") ?? "UNKNOWN",
-          });
-
-          // Update transaction with enrichment data
-          await ctx.runMutation(internal.private.updateTransactionEnrichment, {
-            transactionId: enrichedTx.id,
-            merchantId: counterparty.entity_id,
-            enrichmentData: {
-              counterpartyName: counterparty.name,
-              counterpartyType: counterparty.type,
-              counterpartyEntityId: counterparty.entity_id,
-              counterpartyConfidence: counterparty.confidence_level,
-              counterpartyLogoUrl: counterparty.logo_url ?? undefined,
-              counterpartyWebsite: counterparty.website ?? undefined,
-              counterpartyPhoneNumber: counterparty.phone_number ?? undefined,
-              enrichedAt: Date.now(),
-            },
-          });
-
-          enriched++;
-        } else {
-          failed++;
-        }
-      }
-
+    const partitioned = partitionEnrichmentInput(args.transactions);
+    if (partitioned.skipped.length > 0) {
       console.log(
-        `[Plaid Component] Enriched ${enriched} transactions, ${failed} failed`
+        `[Plaid Component] Skipping ${partitioned.skipped.length} transaction(s) with unsupported account_type.`
       );
-
-      return { enriched, failed };
-    } catch (error: any) {
-      console.error(
-        "[Plaid Component] Transaction enrichment failed:",
-        formatErrorForLog(error)
-      );
-      throw error;
     }
+
+    let totalEnriched = 0;
+    let totalFailed = 0;
+
+    for (const [accountType, batch] of [
+      ["credit", partitioned.credit],
+      ["depository", partitioned.depository],
+    ] as const) {
+      if (batch.length === 0) continue;
+
+      const enrichmentTransactions = batch.map((tx) => ({
+        id: tx.id,
+        description: tx.description,
+        amount: Math.abs(tx.amount),
+        direction: tx.direction,
+        iso_currency_code: tx.iso_currency_code ?? "USD",
+        mcc: tx.mcc,
+        location: tx.location
+          ? {
+              city: tx.location.city,
+              region: tx.location.region,
+              postal_code: tx.location.postal_code,
+              country: tx.location.country,
+            }
+          : undefined,
+      }));
+
+      try {
+        const response = await plaidClient.transactionsEnrich({
+          account_type: accountType,
+          transactions: enrichmentTransactions as any,
+        });
+
+        for (const enrichedTx of response.data.enriched_transactions as any[]) {
+          const enrichments = enrichedTx.enrichments ?? enrichedTx;
+          const counterparty = selectMerchantCounterparty(enrichments.counterparties);
+
+          if (counterparty?.entity_id && counterparty.name) {
+            await ctx.runMutation(internal.private.upsertMerchantEnrichment, {
+              merchantId: counterparty.entity_id,
+              merchantName: counterparty.name,
+              logoUrl: counterparty.logo_url ?? undefined,
+              categoryPrimary: enrichments.personal_finance_category?.primary,
+              categoryDetailed: enrichments.personal_finance_category?.detailed,
+              categoryIconUrl:
+                enrichments.personal_finance_category_icon_url ?? undefined,
+              website: counterparty.website ?? undefined,
+              phoneNumber: counterparty.phone_number ?? undefined,
+              confidenceLevel:
+                (counterparty.confidence_level as
+                  | "VERY_HIGH"
+                  | "HIGH"
+                  | "MEDIUM"
+                  | "LOW"
+                  | "UNKNOWN") ?? "UNKNOWN",
+            });
+
+            await ctx.runMutation(internal.private.updateTransactionEnrichment, {
+              transactionId: enrichedTx.id,
+              merchantId: counterparty.entity_id,
+              enrichmentData: {
+                counterpartyName: counterparty.name,
+                counterpartyType: counterparty.type ?? undefined,
+                counterpartyEntityId: counterparty.entity_id,
+                counterpartyConfidence: counterparty.confidence_level ?? undefined,
+                counterpartyLogoUrl: counterparty.logo_url ?? undefined,
+                counterpartyWebsite: counterparty.website ?? undefined,
+                counterpartyPhoneNumber: counterparty.phone_number ?? undefined,
+                enrichedAt: Date.now(),
+              },
+            });
+
+            totalEnriched++;
+          } else {
+            totalFailed++;
+          }
+        }
+      } catch (error: any) {
+        console.error(
+          `[Plaid Component] Transaction enrichment failed (account_type=${accountType}):`,
+          formatErrorForLog(error)
+        );
+        throw error;
+      }
+    }
+
+    totalFailed += partitioned.skipped.length;
+
+    console.log(
+      `[Plaid Component] Enriched ${totalEnriched} transactions, ${totalFailed} failed (incl. ${partitioned.skipped.length} skipped).`
+    );
+
+    return { enriched: totalEnriched, failed: totalFailed };
   },
 });
 

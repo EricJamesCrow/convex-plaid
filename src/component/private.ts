@@ -41,6 +41,17 @@ import type { QueryCtx, MutationCtx } from "./_generated/server.js";
  * @param updateFn - Function to update an existing record
  * @returns { created: boolean; id: string } - Whether record was created or updated
  */
+function compareByCreationTimeThenId<T extends { _id: any; _creationTime: number }>(
+  a: T,
+  b: T
+) {
+  const createdDelta = a._creationTime - b._creationTime;
+  if (createdDelta !== 0) return createdDelta;
+  const aId = String(a._id);
+  const bId = String(b._id);
+  return aId < bId ? -1 : aId > bId ? 1 : 0;
+}
+
 async function safeUpsertWithDedup<T extends { _id: any; _creationTime: number }>(
   ctx: MutationCtx,
   queryFn: () => Promise<T | null>,
@@ -52,9 +63,19 @@ async function safeUpsertWithDedup<T extends { _id: any; _creationTime: number }
   const existing = await queryFn();
 
   if (existing) {
-    // Record exists - just update it
-    await updateFn(existing._id);
-    return { created: false, id: String(existing._id) };
+    const allMatching = await queryAllFn();
+    const sorted = allMatching.length > 0
+      ? allMatching.sort(compareByCreationTimeThenId)
+      : [existing];
+    const survivor = sorted[0];
+    const duplicates = sorted.slice(1);
+
+    for (const dup of duplicates) {
+      await ctx.db.delete(dup._id);
+    }
+
+    await updateFn(survivor._id);
+    return { created: false, id: String(survivor._id) };
   }
 
   // No existing record - insert new one
@@ -67,7 +88,7 @@ async function safeUpsertWithDedup<T extends { _id: any; _creationTime: number }
 
   if (allMatching.length > 1) {
     // Duplicates detected! Keep the one with earliest creation time
-    const sorted = allMatching.sort((a, b) => a._creationTime - b._creationTime);
+    const sorted = allMatching.sort(compareByCreationTimeThenId);
     const survivor = sorted[0];
     const duplicates = sorted.slice(1);
 
@@ -125,6 +146,37 @@ const accountValidator = v.object({
   balances: balancesValidator,
 });
 
+const confidenceLevelValidator = v.union(
+  v.literal("VERY_HIGH"),
+  v.literal("HIGH"),
+  v.literal("MEDIUM"),
+  v.literal("LOW"),
+  v.literal("UNKNOWN")
+);
+
+const enrichmentDataValidator = v.object({
+  counterpartyName: v.optional(v.string()),
+  counterpartyType: v.optional(v.string()),
+  counterpartyEntityId: v.optional(v.string()),
+  counterpartyConfidence: v.optional(v.string()),
+  counterpartyLogoUrl: v.optional(v.string()),
+  counterpartyWebsite: v.optional(v.string()),
+  counterpartyPhoneNumber: v.optional(v.string()),
+  enrichedAt: v.optional(v.number()),
+});
+
+const transactionMerchantEnrichmentValidator = v.object({
+  merchantId: v.string(),
+  merchantName: v.string(),
+  logoUrl: v.optional(v.string()),
+  categoryPrimary: v.optional(v.string()),
+  categoryDetailed: v.optional(v.string()),
+  categoryIconUrl: v.optional(v.string()),
+  website: v.optional(v.string()),
+  phoneNumber: v.optional(v.string()),
+  confidenceLevel: confidenceLevelValidator,
+});
+
 const transactionValidator = v.object({
   accountId: v.string(),
   transactionId: v.string(),
@@ -134,11 +186,15 @@ const transactionValidator = v.object({
   datetime: v.optional(v.string()),
   name: v.string(),
   merchantName: v.optional(v.string()),
+  originalDescription: v.optional(v.string()),
   pending: v.boolean(),
   pendingTransactionId: v.optional(v.string()),
   categoryPrimary: v.optional(v.string()),
   categoryDetailed: v.optional(v.string()),
   paymentChannel: v.optional(v.string()),
+  merchantId: v.optional(v.string()),
+  enrichmentData: v.optional(enrichmentDataValidator),
+  merchantEnrichment: v.optional(transactionMerchantEnrichmentValidator),
 });
 
 const aprValidator = v.object({
@@ -169,6 +225,324 @@ const recurringStreamValidator = v.object({
   lastDate: v.optional(v.string()),
   predictedNextDate: v.optional(v.string()),
 });
+
+type ConfidenceLevel = "VERY_HIGH" | "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN";
+
+type MerchantEnrichmentInput = {
+  merchantId: string;
+  merchantName: string;
+  logoUrl?: string;
+  categoryPrimary?: string;
+  categoryDetailed?: string;
+  categoryIconUrl?: string;
+  website?: string;
+  phoneNumber?: string;
+  confidenceLevel: ConfidenceLevel;
+};
+
+type EnrichmentDataInput = {
+  counterpartyName?: string;
+  counterpartyType?: string;
+  counterpartyEntityId?: string;
+  counterpartyConfidence?: string;
+  counterpartyLogoUrl?: string;
+  counterpartyWebsite?: string;
+  counterpartyPhoneNumber?: string;
+  enrichedAt?: number;
+};
+
+type TransactionInput = {
+  accountId: string;
+  transactionId: string;
+  amount: number;
+  isoCurrencyCode: string;
+  date: string;
+  datetime?: string;
+  name: string;
+  merchantName?: string;
+  pending: boolean;
+  pendingTransactionId?: string;
+  categoryPrimary?: string;
+  categoryDetailed?: string;
+  paymentChannel?: string;
+  merchantId?: string;
+  enrichmentData?: EnrichmentDataInput;
+  merchantEnrichment?: MerchantEnrichmentInput;
+};
+
+type StoredTransactionDoc = TransactionInput & {
+  _id: any;
+  _creationTime: number;
+  userId: string;
+  plaidItemId: string;
+  createdAt: number;
+  updatedAt?: number;
+};
+
+type MerchantEnrichmentDoc = MerchantEnrichmentInput & {
+  _id: unknown;
+  _creationTime: number;
+  lastEnriched: number;
+};
+
+function buildMerchantEnrichmentPatch(
+  merchant: MerchantEnrichmentInput,
+  now: number,
+  existing?: Partial<MerchantEnrichmentDoc> | null
+) {
+  return {
+    merchantId: merchant.merchantId,
+    merchantName: merchant.merchantName,
+    logoUrl: merchant.logoUrl ?? existing?.logoUrl,
+    categoryPrimary: merchant.categoryPrimary ?? existing?.categoryPrimary,
+    categoryDetailed: merchant.categoryDetailed ?? existing?.categoryDetailed,
+    categoryIconUrl: merchant.categoryIconUrl ?? existing?.categoryIconUrl,
+    website: merchant.website ?? existing?.website,
+    phoneNumber: merchant.phoneNumber ?? existing?.phoneNumber,
+    confidenceLevel:
+      merchant.confidenceLevel !== "UNKNOWN"
+        ? merchant.confidenceLevel
+        : existing?.confidenceLevel ?? "UNKNOWN",
+    lastEnriched: now,
+  };
+}
+
+async function upsertMerchantEnrichmentRecord(
+  ctx: MutationCtx,
+  merchant: MerchantEnrichmentInput
+): Promise<string> {
+  const now = Date.now();
+
+  const result = await safeUpsertWithDedup(
+    ctx,
+    () =>
+      ctx.db
+        .query("merchantEnrichments")
+        .withIndex("by_merchant", (q) => q.eq("merchantId", merchant.merchantId))
+        .first(),
+    () =>
+      ctx.db
+        .query("merchantEnrichments")
+        .withIndex("by_merchant", (q) => q.eq("merchantId", merchant.merchantId))
+        .collect(),
+    async () => {
+      const id = await ctx.db.insert(
+        "merchantEnrichments",
+        buildMerchantEnrichmentPatch(merchant, now)
+      );
+      return String(id);
+    },
+    async (id) => {
+      const existing = (await ctx.db.get(id)) as Partial<MerchantEnrichmentDoc> | null;
+      await ctx.db.patch(id, buildMerchantEnrichmentPatch(merchant, now, existing));
+    }
+  );
+
+  return result.id;
+}
+
+function splitTransactionForStorage(transaction: TransactionInput) {
+  const { merchantEnrichment, merchantId, enrichmentData, ...transactionDoc } = transaction;
+  return {
+    merchantEnrichment,
+    transactionDoc: {
+      ...transactionDoc,
+      ...(merchantId ? { merchantId } : {}),
+      ...(enrichmentData ? { enrichmentData } : {}),
+    },
+  };
+}
+
+async function prepareTransactionDocument(
+  ctx: MutationCtx,
+  transaction: TransactionInput
+) {
+  const { merchantEnrichment, transactionDoc } = splitTransactionForStorage(transaction);
+  if (merchantEnrichment) {
+    await upsertMerchantEnrichmentRecord(ctx, merchantEnrichment);
+  }
+  return transactionDoc;
+}
+
+async function removeDuplicateTransactionRows(
+  ctx: MutationCtx,
+  docs: StoredTransactionDoc[]
+): Promise<StoredTransactionDoc | null> {
+  if (docs.length === 0) return null;
+
+  const sorted = [...docs].sort(compareByCreationTimeThenId);
+  const survivor = sorted[0];
+
+  for (const duplicate of sorted.slice(1)) {
+    await ctx.db.delete(duplicate._id);
+  }
+
+  return survivor;
+}
+
+async function reassignPlaidItemReferences(
+  ctx: MutationCtx,
+  fromPlaidItemId: string,
+  toPlaidItemId: string
+) {
+  const mergeDuplicateRowPayload = <
+    T extends {
+      _id: any;
+      _creationTime: number;
+      plaidItemId: string;
+      [key: string]: unknown;
+    },
+  >(
+    rows: T[]
+  ) => {
+    const merged: Record<string, unknown> = {};
+
+    for (const row of [...rows].sort(compareByCreationTimeThenId)) {
+      for (const [key, value] of Object.entries(row)) {
+        if (key === "_id" || key === "_creationTime" || key === "createdAt") {
+          continue;
+        }
+        if (value !== undefined) {
+          merged[key] = value;
+        }
+      }
+    }
+
+    merged.plaidItemId = toPlaidItemId;
+    return merged;
+  };
+
+  const mergeRowsByNaturalKey = async <
+    T extends {
+      _id: any;
+      _creationTime: number;
+      plaidItemId: string;
+      [key: string]: unknown;
+    },
+  >(
+    fromRows: T[],
+    toRows: T[],
+    naturalKey: (row: T) => string
+  ) => {
+    const rowsByKey = new Map<string, { rows: T[]; hasSourceRow: boolean }>();
+    const addRow = (row: T, sourceRow: boolean) => {
+      const key = naturalKey(row);
+      const current = rowsByKey.get(key);
+      if (!current) {
+        rowsByKey.set(key, { rows: [row], hasSourceRow: sourceRow });
+        return;
+      }
+
+      current.rows.push(row);
+      current.hasSourceRow ||= sourceRow;
+    };
+
+    for (const target of toRows) addRow(target, false);
+    for (const source of fromRows) addRow(source, true);
+
+    for (const { rows, hasSourceRow } of rowsByKey.values()) {
+      if (!hasSourceRow) continue;
+
+      const sorted = [...rows].sort(compareByCreationTimeThenId);
+      const survivor = sorted[0];
+
+      await ctx.db.patch(
+        survivor._id,
+        mergeDuplicateRowPayload(sorted) as any
+      );
+
+      for (const duplicate of sorted.slice(1)) {
+        await ctx.db.delete(duplicate._id);
+      }
+    }
+  };
+
+  const accounts = await ctx.db
+    .query("plaidAccounts")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", fromPlaidItemId))
+    .collect();
+  const targetAccounts = await ctx.db
+    .query("plaidAccounts")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", toPlaidItemId))
+    .collect();
+  await mergeRowsByNaturalKey(accounts, targetAccounts, (account) => account.accountId);
+
+  const transactions = await ctx.db
+    .query("plaidTransactions")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", fromPlaidItemId))
+    .collect();
+  const targetTransactions = await ctx.db
+    .query("plaidTransactions")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", toPlaidItemId))
+    .collect();
+  await mergeRowsByNaturalKey(transactions, targetTransactions, (transaction) => transaction.transactionId);
+
+  const creditCardLiabilities = await ctx.db
+    .query("plaidCreditCardLiabilities")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", fromPlaidItemId))
+    .collect();
+  const targetCreditCardLiabilities = await ctx.db
+    .query("plaidCreditCardLiabilities")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", toPlaidItemId))
+    .collect();
+  await mergeRowsByNaturalKey(
+    creditCardLiabilities,
+    targetCreditCardLiabilities,
+    (liability) => liability.accountId
+  );
+
+  const mortgageLiabilities = await ctx.db
+    .query("plaidMortgageLiabilities")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", fromPlaidItemId))
+    .collect();
+  const targetMortgageLiabilities = await ctx.db
+    .query("plaidMortgageLiabilities")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", toPlaidItemId))
+    .collect();
+  await mergeRowsByNaturalKey(
+    mortgageLiabilities,
+    targetMortgageLiabilities,
+    (liability) => liability.accountId
+  );
+
+  const studentLoanLiabilities = await ctx.db
+    .query("plaidStudentLoanLiabilities")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", fromPlaidItemId))
+    .collect();
+  const targetStudentLoanLiabilities = await ctx.db
+    .query("plaidStudentLoanLiabilities")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", toPlaidItemId))
+    .collect();
+  await mergeRowsByNaturalKey(
+    studentLoanLiabilities,
+    targetStudentLoanLiabilities,
+    (liability) => liability.accountId
+  );
+
+  const recurringStreams = await ctx.db
+    .query("plaidRecurringStreams")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", fromPlaidItemId))
+    .collect();
+  const targetRecurringStreams = await ctx.db
+    .query("plaidRecurringStreams")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", toPlaidItemId))
+    .collect();
+  await mergeRowsByNaturalKey(recurringStreams, targetRecurringStreams, (stream) => stream.streamId);
+
+  const syncLogs = await ctx.db
+    .query("syncLogs")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", fromPlaidItemId))
+    .collect();
+  const targetSyncLogs = await ctx.db
+    .query("syncLogs")
+    .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", toPlaidItemId))
+    .collect();
+  await mergeRowsByNaturalKey(
+    syncLogs,
+    targetSyncLogs,
+    (syncLog) => `${syncLog.syncType}:${syncLog.trigger}:${syncLog.startedAt}`
+  );
+}
 
 // =============================================================================
 // INTERNAL QUERIES
@@ -257,6 +631,57 @@ export const createPlaidItem = internalMutation({
   },
   returns: v.string(),
   handler: async (ctx, args) => {
+    const now = Date.now();
+    const itemUpdate = {
+      userId: args.userId,
+      accessToken: args.accessToken,
+      institutionId: args.institutionId,
+      institutionName: args.institutionName,
+      products: args.products,
+      isActive: args.isActive ?? true,
+      status: args.status as any,
+      syncError: undefined,
+    };
+    const consolidateMatchingItems = async (
+      matchingItems: Array<{
+        _id: any;
+        _creationTime: number;
+        status: string;
+        syncVersion?: number;
+      }>
+    ) => {
+      const sorted = matchingItems
+        .filter((item) => item.status !== "deleting")
+        .sort(compareByCreationTimeThenId);
+      const survivor = sorted[0];
+
+      if (!survivor) return null;
+
+      for (const duplicate of sorted.slice(1)) {
+        await reassignPlaidItemReferences(
+          ctx,
+          String(duplicate._id),
+          String(survivor._id)
+        );
+        await ctx.db.delete(duplicate._id);
+      }
+
+      await ctx.db.patch(survivor._id, {
+        ...itemUpdate,
+        ...(survivor.syncVersion === undefined ? { syncVersion: 0 } : {}),
+      });
+
+      return String(survivor._id);
+    };
+
+    const matchingItems = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_item_id", (q) => q.eq("itemId", args.itemId))
+      .collect();
+
+    const existingSurvivorId = await consolidateMatchingItems(matchingItems);
+    if (existingSurvivorId) return existingSurvivorId;
+
     const id = await ctx.db.insert("plaidItems", {
       userId: args.userId,
       itemId: args.itemId,
@@ -266,10 +691,15 @@ export const createPlaidItem = internalMutation({
       products: args.products,
       isActive: args.isActive ?? true,
       status: args.status as any,
-      createdAt: Date.now(),
+      createdAt: now,
+      syncVersion: 0,
     });
 
-    return String(id);
+    const itemsAfterInsert = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_item_id", (q) => q.eq("itemId", args.itemId))
+      .collect();
+    return (await consolidateMatchingItems(itemsAfterInsert)) ?? String(id);
   },
 });
 
@@ -501,6 +931,13 @@ export const completeSyncWithVersion = internalMutation({
 /**
  * Release sync lock on error without updating cursor.
  * Uses O(1) lookup via ctx.db.normalizeId() + ctx.db.get().
+ *
+ * W4: when transitioning into an error-class status ("error" or
+ * "needs_reauth"), stamp the error-tracking fields the 6-hour persistent-
+ * error cron filters on: `firstErrorAt` (monotonic; first-write-wins),
+ * `errorAt = now`, and `errorCode` (from the optional arg, falling back
+ * to a "SYNC_ERROR" sentinel so the cron can still emit a best-effort
+ * dispatch with a visible label).
  */
 export const releaseSyncLock = internalMutation({
   args: {
@@ -508,6 +945,7 @@ export const releaseSyncLock = internalMutation({
     syncVersion: v.number(),
     status: v.string(),
     syncError: v.optional(v.string()),
+    errorCode: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -520,11 +958,22 @@ export const releaseSyncLock = internalMutation({
       if (item.status === "deleting") {
         return null;
       }
-      await ctx.db.patch(item._id, {
+
+      const patch: Record<string, unknown> = {
         status: args.status as any,
         syncError: args.syncError,
         syncStartedAt: undefined,
-      });
+      };
+
+      if (args.status === "error" || args.status === "needs_reauth") {
+        const now = Date.now();
+        if (item.firstErrorAt == null) patch.firstErrorAt = now;
+        patch.errorAt = now;
+        patch.errorCode = args.errorCode ?? "SYNC_ERROR";
+        if (args.syncError != null) patch.errorMessage = args.syncError;
+      }
+
+      await ctx.db.patch(item._id, patch);
     }
 
     return null;
@@ -801,55 +1250,156 @@ export const bulkUpsertTransactions = internalMutation({
 
     const now = Date.now();
 
-    // OPTIMIZATION: Batch query - fetch all existing transactions for this item upfront
-    // This replaces N individual queries (one per modified/removed) with 1 query
+    // Batch query and group by Plaid transactionId. Replayed sync cursors and
+    // older duplicate rows are reconciled to one survivor per transactionId.
     const existingTransactions = await ctx.db
       .query("plaidTransactions")
       .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
-      .collect();
+      .collect() as StoredTransactionDoc[];
 
-    // Build lookup map: transactionId -> document _id (O(1) lookup)
-    const transactionIdToDocId = new Map(
-      existingTransactions.map((t) => [t.transactionId, t._id])
-    );
-
-    // Insert added transactions
-    for (const txn of args.added) {
-      await ctx.db.insert("plaidTransactions", {
-        userId: args.userId,
-        plaidItemId: args.plaidItemId,
-        ...txn,
-        createdAt: now,
-      });
+    const transactionIdToDocs = new Map<string, StoredTransactionDoc[]>();
+    for (const transaction of existingTransactions) {
+      const docs = transactionIdToDocs.get(transaction.transactionId) ?? [];
+      docs.push(transaction);
+      transactionIdToDocs.set(transaction.transactionId, docs);
     }
 
-    // Update modified transactions (no query in loop - use Map lookup)
+    let addedCount = 0;
     let modifiedCount = 0;
-    for (const txn of args.modified) {
-      const docId = transactionIdToDocId.get(txn.transactionId);
-      if (docId) {
-        await ctx.db.patch(docId, {
-          ...txn,
+
+    const upsertTransaction = async (txn: TransactionInput) => {
+      const existingDocs = transactionIdToDocs.get(txn.transactionId) ?? [];
+      const transactionDoc = await prepareTransactionDocument(ctx, txn);
+      const survivor = await removeDuplicateTransactionRows(ctx, existingDocs);
+
+      if (survivor) {
+        await ctx.db.patch(survivor._id, {
+          userId: args.userId,
+          plaidItemId: args.plaidItemId,
+          ...transactionDoc,
           updatedAt: now,
         });
+        transactionIdToDocs.set(txn.transactionId, [survivor]);
+        return "updated" as const;
+      }
+
+      const id = await ctx.db.insert("plaidTransactions", {
+        userId: args.userId,
+        plaidItemId: args.plaidItemId,
+        ...transactionDoc,
+        createdAt: now,
+      });
+      const inserted = await ctx.db.get(id);
+      if (inserted) {
+        transactionIdToDocs.set(txn.transactionId, [inserted as StoredTransactionDoc]);
+      }
+      return "created" as const;
+    };
+
+    for (const txn of args.added) {
+      const result = await upsertTransaction(txn);
+      if (result === "created") {
+        addedCount++;
+      } else {
         modifiedCount++;
       }
     }
 
-    // Delete removed transactions (no query in loop - use Map lookup)
-    let removedCount = 0;
-    for (const transactionId of args.removed) {
-      const docId = transactionIdToDocId.get(transactionId);
-      if (docId) {
-        await ctx.db.delete(docId);
-        removedCount++;
+    // Modified rows are also upserted so replay or out-of-order Plaid pages do
+    // not drop updates when the original "added" row is absent.
+    for (const txn of args.modified) {
+      const result = await upsertTransaction(txn);
+      if (result === "created") {
+        addedCount++;
+      } else {
+        modifiedCount++;
       }
     }
 
+    let removedCount = 0;
+    for (const transactionId of args.removed) {
+      const transactions = transactionIdToDocs.get(transactionId) ?? [];
+      for (const transaction of transactions) {
+        await ctx.db.delete(transaction._id);
+      }
+      removedCount += transactions.length;
+      transactionIdToDocs.delete(transactionId);
+    }
+
     return {
-      added: args.added.length,
+      added: addedCount,
       modified: modifiedCount,
       removed: removedCount,
+    };
+  },
+});
+
+/**
+ * Backfill merchant enrichment fields for existing transaction rows.
+ *
+ * This intentionally does not insert missing transactions or touch item cursors.
+ * It is meant for one-time recovery when historical transactions were synced
+ * before merchant/logo fields were persisted.
+ */
+export const backfillTransactionEnrichments = internalMutation({
+  args: {
+    plaidItemId: v.string(),
+    transactions: v.array(transactionValidator),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    matched: v.number(),
+    updated: v.number(),
+    merchantsUpserted: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item || item.status === "deleting") {
+      return {
+        scanned: args.transactions.length,
+        matched: 0,
+        updated: 0,
+        merchantsUpserted: 0,
+      };
+    }
+
+    const existingTransactions = await ctx.db
+      .query("plaidTransactions")
+      .withIndex("by_plaid_item", (q) => q.eq("plaidItemId", args.plaidItemId))
+      .collect();
+    const transactionIdToDoc = new Map(
+      existingTransactions.map((transaction) => [transaction.transactionId, transaction])
+    );
+
+    let matched = 0;
+    let updated = 0;
+    let merchantsUpserted = 0;
+    const now = Date.now();
+
+    for (const transaction of args.transactions) {
+      const existingTransaction = transactionIdToDoc.get(transaction.transactionId);
+      if (!existingTransaction) continue;
+
+      matched++;
+      const { merchantEnrichment, transactionDoc } = splitTransactionForStorage(transaction);
+      if (!merchantEnrichment || !transactionDoc.merchantId) continue;
+
+      await upsertMerchantEnrichmentRecord(ctx, merchantEnrichment);
+      merchantsUpserted++;
+
+      await ctx.db.patch(existingTransaction._id, {
+        merchantId: transactionDoc.merchantId,
+        enrichmentData: transactionDoc.enrichmentData,
+        updatedAt: now,
+      });
+      updated++;
+    }
+
+    return {
+      scanned: args.transactions.length,
+      matched,
+      updated,
+      merchantsUpserted,
     };
   },
 });
@@ -1906,14 +2456,6 @@ export const bulkUpsertStudentLoanLiabilities = internalMutation({
 // INTERNAL MUTATIONS - Merchant Enrichment
 // =============================================================================
 
-const confidenceLevelValidator = v.union(
-  v.literal("VERY_HIGH"),
-  v.literal("HIGH"),
-  v.literal("MEDIUM"),
-  v.literal("LOW"),
-  v.literal("UNKNOWN")
-);
-
 /**
  * Upsert merchant enrichment by merchantId.
  * Shared across all users.
@@ -1935,40 +2477,7 @@ export const upsertMerchantEnrichment = internalMutation({
   },
   returns: v.string(),
   handler: async (ctx, args) => {
-    const now = Date.now();
-
-    const result = await safeUpsertWithDedup(
-      ctx,
-      // Query for existing record
-      () =>
-        ctx.db
-          .query("merchantEnrichments")
-          .withIndex("by_merchant", (q) => q.eq("merchantId", args.merchantId))
-          .first(),
-      // Query for ALL matching records (for duplicate detection)
-      () =>
-        ctx.db
-          .query("merchantEnrichments")
-          .withIndex("by_merchant", (q) => q.eq("merchantId", args.merchantId))
-          .collect(),
-      // Insert function
-      async () => {
-        const id = await ctx.db.insert("merchantEnrichments", {
-          ...args,
-          lastEnriched: now,
-        });
-        return String(id);
-      },
-      // Update function
-      async (id) => {
-        await ctx.db.patch(id, {
-          ...args,
-          lastEnriched: now,
-        });
-      }
-    );
-
-    return result.id;
+    return await upsertMerchantEnrichmentRecord(ctx, args);
   },
 });
 
@@ -2130,12 +2639,16 @@ export const findRecentByHash = internalQuery({
 
     const matches = await ctx.db
       .query("webhookLogs")
-      .withIndex("by_body_hash", (q) => q.eq("bodyHash", args.bodyHash))
-      .collect();
+      .withIndex("by_body_hash_received_at", (q) =>
+        q.eq("bodyHash", args.bodyHash).gte("receivedAt", cutoff)
+      )
+      .order("desc")
+      .take(10);
 
-    // Find first match within time window that isn't a duplicate
+    // Only in-flight receipts are deduped. Completed matching payloads can be
+    // legitimate repeated Plaid events and should still schedule fresh work.
     const recent = matches.find(
-      (log) => log.receivedAt >= cutoff && log.status !== "duplicate"
+      (log) => log.status === "received" || log.status === "processing"
     );
 
     if (!recent) return null;
@@ -2489,19 +3002,160 @@ export const upsertInstitution = internalMutation({
         });
         return String(id);
       },
-      // Update function
+      // Update function — merge optional branding fields so later Plaid calls
+      // that omit logo / primary_color / etc. do not clear cached values.
       async (id) => {
-        await ctx.db.patch(id, {
+        const patch: {
+          name: string;
+          lastFetched: number;
+          logo?: string;
+          primaryColor?: string;
+          url?: string;
+          products?: string[];
+        } = {
           name: args.name,
-          logo: args.logo,
-          primaryColor: args.primaryColor,
-          url: args.url,
-          products: args.products,
           lastFetched: now,
-        });
+        };
+        if (args.logo !== undefined) patch.logo = args.logo;
+        if (args.primaryColor !== undefined) patch.primaryColor = args.primaryColor;
+        if (args.url !== undefined) patch.url = args.url;
+        if (args.products !== undefined) patch.products = args.products;
+        await ctx.db.patch(id, patch);
       }
     );
 
     return result.id;
+  },
+});
+
+// =============================================================================
+// W4: NEW ACCOUNTS AVAILABLE + ERROR TRACKING MUTATIONS
+// =============================================================================
+
+/**
+ * Stamp plaidItems.newAccountsAvailableAt with the current timestamp.
+ * Called by the ITEM:NEW_ACCOUNTS_AVAILABLE webhook handler.
+ * Idempotent: writing the timestamp twice has no functional effect.
+ */
+export const setNewAccountsAvailableInternal = internalMutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    await ctx.db.patch(item._id, { newAccountsAvailableAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * Clear plaidItems.newAccountsAvailableAt.
+ * Called exactly once per flow: after a successful update-mode exchangePublicToken
+ * for an existing plaidItemId.
+ */
+export const clearNewAccountsAvailableInternal = internalMutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    await ctx.db.patch(item._id, { newAccountsAvailableAt: undefined });
+    return null;
+  },
+});
+
+/**
+ * Stamp plaidItems.firstErrorAt if not already set (first-write-wins).
+ * Called before the status patch on transition into error or needs_reauth.
+ * Keeps the error-transition clock monotonic across repeated error observations.
+ */
+export const markFirstErrorAtInternal = internalMutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    if (item.firstErrorAt == null) {
+      await ctx.db.patch(item._id, { firstErrorAt: Date.now() });
+    }
+    return null;
+  },
+});
+
+/**
+ * Clear plaidItems.firstErrorAt and plaidItems.lastDispatchedAt.
+ * Called on transition from error-class status back to active via
+ * completeReauthAction or a successful sync.
+ */
+export const clearErrorTrackingInternal = internalMutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    await ctx.db.patch(item._id, {
+      firstErrorAt: undefined,
+      lastDispatchedAt: undefined,
+    });
+    return null;
+  },
+});
+
+/**
+ * Stamp plaidItems.lastDispatchedAt.
+ * Called by the 6-hour persistent-error cron immediately after scheduling
+ * dispatchItemErrorPersistent. Used as the cron's dedup filter.
+ */
+export const markItemErrorDispatchedInternal = internalMutation({
+  args: { plaidItemId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const item = await getPlaidItemById(ctx, args.plaidItemId);
+    if (!item) return null;
+    await ctx.db.patch(item._id, { lastDispatchedAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * List plaidItems in error status that:
+ *   - have lastSyncedAt older than olderThanLastSyncedAt (or undefined)
+ *   - have lastDispatchedAt older than dispatchedBefore (or undefined)
+ *
+ * Used by the host-app 6-hour persistent-error cron per W4 spec §8.2.
+ * Returns a subset payload (not the full plaidItem doc) to cap component-
+ * boundary surface area.
+ */
+export const listErrorItemsInternal = internalQuery({
+  args: {
+    olderThanLastSyncedAt: v.number(),
+    dispatchedBefore: v.number(),
+  },
+  returns: v.array(
+    v.object({
+      plaidItemId: v.string(),
+      userId: v.string(),
+      institutionName: v.union(v.string(), v.null()),
+      firstErrorAt: v.union(v.number(), v.null()),
+      errorAt: v.union(v.number(), v.null()),
+      errorCode: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const items = await ctx.db
+      .query("plaidItems")
+      .withIndex("by_status", (q) => q.eq("status", "error"))
+      .collect();
+    return items
+      .filter((i) => (i.lastSyncedAt ?? 0) < args.olderThanLastSyncedAt)
+      .filter((i) => (i.lastDispatchedAt ?? 0) < args.dispatchedBefore)
+      .map((i) => ({
+        plaidItemId: String(i._id),
+        userId: i.userId,
+        institutionName: i.institutionName ?? null,
+        firstErrorAt: i.firstErrorAt ?? null,
+        errorAt: i.errorAt ?? null,
+        errorCode: i.errorCode ?? null,
+      }));
   },
 });

@@ -68,6 +68,13 @@ export interface PlaidConfig {
   ENCRYPTION_KEY: string;
 }
 
+/**
+ * Account filters passed to Plaid Link token creation.
+ * Uses a loose shape to support Plaid's evolving filter schema without
+ * requiring frequent library updates.
+ */
+export type PlaidAccountFilters = Record<string, unknown>;
+
 // =============================================================================
 // WEBHOOK TYPES (Phase 2)
 // =============================================================================
@@ -168,6 +175,20 @@ export interface SyncTransactionsOptions {
   maxPages?: number;
   /** Maximum transactions to accumulate before stopping (default: 5000) */
   maxTransactions?: number;
+}
+
+/**
+ * Result from backfillTransactionEnrichments.
+ */
+export interface BackfillTransactionEnrichmentsResult {
+  scanned: number;
+  matched: number;
+  updated: number;
+  merchantsUpserted: number;
+  /** True if more historical pages remain */
+  hasMore: boolean;
+  /** Number of pages processed in this backfill */
+  pagesProcessed: number;
 }
 
 /**
